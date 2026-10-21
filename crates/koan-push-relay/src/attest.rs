@@ -323,7 +323,7 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(key.production, production);
-            assert_eq!(key.public_key, apple.device.public_key().as_ref());
+            assert_eq!(key.public_key, apple.public_key());
         }
     }
 
@@ -376,7 +376,7 @@ mod tests {
     fn an_assertion_holds_only_for_what_it_signed() {
         let apple = FakeApple::new();
         let a = attestor(&apple);
-        let key = apple.device.public_key().as_ref().to_vec();
+        let key = apple.public_key();
         let signed = apple.assertion(APP_ID, b"register this");
         assert!(a.assert(&key, &signed, b"register this").is_ok());
         assert!(a.assert(&key, &signed, b"register that").is_err());
@@ -386,12 +386,8 @@ mod tests {
         );
         let stranger = FakeApple::new();
         assert!(
-            a.assert(
-                stranger.device.public_key().as_ref(),
-                &signed,
-                b"register this"
-            )
-            .is_err()
+            a.assert(&stranger.public_key(), &signed, b"register this")
+                .is_err()
         );
     }
 

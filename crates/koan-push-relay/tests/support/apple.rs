@@ -52,6 +52,11 @@ impl FakeApple {
         }
     }
 
+    /// The device key's public half, uncompressed.
+    pub fn public_key(&self) -> Vec<u8> {
+        self.device.public_key().as_ref().to_vec()
+    }
+
     pub fn key_id(&self) -> Vec<u8> {
         digest::digest(&digest::SHA256, self.device.public_key().as_ref())
             .as_ref()
