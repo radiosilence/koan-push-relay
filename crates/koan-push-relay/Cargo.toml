@@ -1,6 +1,6 @@
 [package]
 name = "koan-push-relay"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ description = "Forwards koan servers' pushes to Apple's push service under a key
 publish = false
 
 [dependencies]
-koan-relay-client = { path = "../koan-relay-client" }
+koan-relay-client = { path = "../koan-relay-client", default-features = false }
 aws-lc-rs = "1"
 axum = "0.8"
 base64 = "0.23"

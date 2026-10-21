@@ -13,7 +13,7 @@ pub enum Route {
 }
 
 const ROUTES: [&str; 4] = ["register", "revoke", "push", "register_activity"];
-const KINDS: usize = crate::apns::Kind::ALL.len();
+const KINDS: usize = crate::apns::KINDS.len();
 
 #[derive(Debug, Clone, Copy)]
 pub enum Outcome {
@@ -63,12 +63,12 @@ impl Metrics {
         }
         out.push_str("# HELP koan_relay_pushes_sent_total Pushes Apple accepted, by kind.\n");
         out.push_str("# TYPE koan_relay_pushes_sent_total counter\n");
-        for kind in crate::apns::Kind::ALL {
+        for kind in crate::apns::KINDS {
             let n = self.sent[kind as usize].load(Ordering::Relaxed);
             let _ = writeln!(
                 out,
                 "koan_relay_pushes_sent_total{{kind=\"{}\"}} {n}",
-                kind.name()
+                crate::apns::name(kind)
             );
         }
         out.push_str("# HELP koan_relay_proofs_total Proofs of a token, by Apple's answer.\n");

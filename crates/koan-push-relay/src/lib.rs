@@ -48,7 +48,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::activity::ActivityState;
-use crate::apns::{Apns, Content, Delivery, Kind, MAX_BLOB, Target};
+use crate::apns::{Apns, Content, Delivery, Kind, Target, is_alert};
 use crate::config::{Config, secret};
 use crate::handle::{
     Handles, Invalid, MAX_LIFETIME_MS, MAX_TOKEN, MIN_TOKEN, SLOT_LEN, Slot, TokenHash, TokenHasher,
@@ -56,6 +56,7 @@ use crate::handle::{
 use crate::metrics::{Metrics, Outcome, Route};
 use crate::quota::{Clock, Global, Keyed, Rate, Refused};
 use crate::revocations::{Revocations, RevokeError, SLACK_MS};
+use koan_relay_client::{Registered, RegisteredActivity, is_blob};
 
 /// The largest request body: a push is a handle, a kind and a blob.
 const MAX_BODY: usize = 8 * 1024;
@@ -755,22 +756,6 @@ struct RegisterActivityRequest {
     slot: String,
 }
 
-#[derive(Serialize)]
-struct RegisteredActivity {
-    handle: String,
-    expires: u64,
-}
-
-#[derive(Serialize)]
-struct Registered {
-    handle: String,
-    /// The app's own key to revoke the device's handles. Never given to a
-    /// server.
-    revoker: String,
-    /// Unix seconds after which the handle and revoker no longer open.
-    expires: u64,
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PushRequest {
@@ -967,10 +952,10 @@ async fn push(
             (_, None) => None,
         };
         if let Some(blob) = &req.blob {
-            if !req.kind.is_alert() {
+            if !is_alert(req.kind) {
                 return Err(Refusal::Bad("only a notification carries a blob"));
             }
-            if blob.is_empty() || blob.len() > MAX_BLOB || !is_base64url(blob) {
+            if !is_blob(blob) {
                 return Err(Refusal::Bad("the blob is not base64url of an allowed size"));
             }
         }
@@ -1006,9 +991,7 @@ async fn push(
                 Allowance::HandleActivity(key),
                 Allowance::DeviceActivity(hash),
             ),
-            kind if kind.is_alert() => {
-                (Allowance::HandleAlerts(key), Allowance::DeviceAlerts(hash))
-            }
+            kind if is_alert(kind) => (Allowance::HandleAlerts(key), Allowance::DeviceAlerts(hash)),
             _ => (Allowance::HandleWakes(key), Allowance::DeviceWakes(hash)),
         };
         let now = relay.clock.now();
@@ -1156,11 +1139,6 @@ fn slot(hex_slot: &str) -> Result<Slot, Refusal> {
     let mut slot = [0; SLOT_LEN];
     hex::decode_to_slice(hex_slot, &mut slot).map_err(|_| Refusal::Bad("not a slot"))?;
     Ok(slot)
-}
-
-fn is_base64url(s: &str) -> bool {
-    s.bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 fn unix_ms() -> u64 {

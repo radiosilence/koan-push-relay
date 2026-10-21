@@ -128,7 +128,7 @@ The relay's notification is titled "kōan", reads "Something is waiting to play.
 
 An `activity` goes only through an activity's handle, and only it does; it carries `state` and nothing else does. iOS draws a Live Activity's state in the app's widget without passing it through the app, so it cannot be encrypted, and the relay bounds it instead:
 
-- `state` has the fields the widget's `ContentState` has, and an unknown field is refused with `400`;
+- `state` has the fields the widget's `ContentState` has; a field the relay does not know is dropped and never sent, and `title`, `artist`, `album` and `art` are left out of what Apple is sent when absent;
 - `device` is cut to 48 bytes and `title`, `artist` and `album` to 256, at a character, with control and formatting characters (those that reorder or hide text among them) removed and whitespace made single spaces;
 - `art` must be base64 of a JPEG, at most 2600 characters, or the update is refused with `400`;
 - `durationMs` is at most a day and `positionMs` at most `durationMs`;

@@ -12,7 +12,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use parking_lot::RwLock;
-use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::activity::{ActivityState, STALE_SECS};
@@ -32,47 +31,29 @@ const PROBE_EVERY: Duration = Duration::from_secs(60);
 pub const ALERT_TITLE: &str = "kōan";
 pub const ALERT_BODY: &str = "Something is waiting to play. Tap to open.";
 
-/// The longest blob a sender may attach, encoded. Apple's limit is 4 KB for
-/// the whole payload; this leaves room for the relay's own part.
-pub const MAX_BLOB: usize = 3072;
+pub use koan_relay_client::{Kind, MAX_BLOB};
 
-/// What a sender asks of a device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Kind {
-    /// Wake the app to link and take what waits for it.
-    Wake,
-    /// The same, for something that is no use an hour late.
-    WakeNow,
-    /// A notification asking to be tapped.
-    Summon,
-    /// A notification carrying a command the app runs when it is tapped.
-    Notify,
-    /// An update to a Live Activity, through a handle for its token.
-    Activity,
+/// Every kind, for counting by kind.
+pub const KINDS: [Kind; 5] = [
+    Kind::Wake,
+    Kind::WakeNow,
+    Kind::Summon,
+    Kind::Notify,
+    Kind::Activity,
+];
+
+/// Whether `kind` shows a notification.
+pub fn is_alert(kind: Kind) -> bool {
+    matches!(kind, Kind::Summon | Kind::Notify)
 }
 
-impl Kind {
-    pub const ALL: [Kind; 5] = [
-        Kind::Wake,
-        Kind::WakeNow,
-        Kind::Summon,
-        Kind::Notify,
-        Kind::Activity,
-    ];
-
-    pub fn is_alert(self) -> bool {
-        matches!(self, Kind::Summon | Kind::Notify)
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Kind::Wake => "wake",
-            Kind::WakeNow => "wake-now",
-            Kind::Summon => "summon",
-            Kind::Notify => "notify",
-            Kind::Activity => "activity",
-        }
+pub fn name(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Wake => "wake",
+        Kind::WakeNow => "wake-now",
+        Kind::Summon => "summon",
+        Kind::Notify => "notify",
+        Kind::Activity => "activity",
     }
 }
 
@@ -485,7 +466,7 @@ pub fn payload(kind: Kind, slot: Option<&Slot>, content: &Content, now: u64) -> 
             },
         });
     }
-    if !kind.is_alert() {
+    if !is_alert(kind) {
         return json!({ "aps": { "content-available": 1 } });
     }
     let mut body = json!({

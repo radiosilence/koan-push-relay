@@ -202,9 +202,11 @@ mod tests {
     }
 
     #[test]
-    fn unknown_fields_are_refused() {
+    fn unknown_fields_are_dropped_and_never_sent() {
         let mut v = serde_json::to_value(state()).unwrap();
         v["alert"] = serde_json::json!("hello");
-        assert!(serde_json::from_value::<ActivityState>(v).is_err());
+        let read: ActivityState = serde_json::from_value(v).unwrap();
+        let sent = serde_json::to_value(bounded(read, NOW).unwrap()).unwrap();
+        assert!(sent.get("alert").is_none());
     }
 }

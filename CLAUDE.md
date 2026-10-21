@@ -1,6 +1,6 @@
 # koan-push-relay
 
-kōan's push relay: forwards push notifications to Apple for self-hosted kōan servers under the developer's key, without letting them choose what a phone shows. It ships as a container image, a static Linux binary on each GitHub release, and a Pulumi package (`@radiosilence/koan-relay-pulumi`, in `deploy/pulumi`) that deploys that image. `docs/push-relay.md` is the specification; a change in behaviour updates it in the same PR.
+kōan's push relay: forwards push notifications to Apple for self-hosted kōan servers under the developer's key, without letting them choose what a phone shows. The workspace holds the relay (`crates/koan-push-relay`) and `koan-relay-client` (`crates/koan-relay-client`), the crate kōan's apps and servers call it through; the relay uses the client's types without its HTTP client (`default-features = false`). It ships as a container image, a static Linux binary on each GitHub release, and a Pulumi package (`@radiosilence/koan-relay-pulumi`, in `deploy/pulumi`) that deploys that image. `docs/push-relay.md` is the specification; a change in behaviour updates it in the same PR.
 
 The relay answers for the developer's Apple account. A change that lets anyone other than the relay decide what Apple is sent, what a phone shows, or how often, is a change to that bound and is stated as such in the PR.
 
@@ -16,7 +16,7 @@ The relay answers for the developer's Apple account. A change that lets anyone o
 
 ## Releasing
 
-`just release patch|minor|major` (or an exact `X.Y.Z`) branches from main, bumps the crate and `Cargo.lock`, `deploy/pulumi/package.json` and its lockfile, and `APP_VERSION` in `deploy/pulumi/src/versions.ts`, turns the unreleased fragments into the version and opens the release PR. The three numbers are one: the package deploys the image by `APP_VERSION`, and CI fails any commit where they disagree. Merging the PR is the release: CI pushes the image's semver tags, then publishes the Pulumi package, then creates the GitHub release with the binaries and the changelog section as notes. A push releases only when it changes the version; `gh workflow run ci-cd.yml` on main retries a release that failed part way. The Release workflow (`gh workflow run release.yml -f bump=patch`) opens the same PR from CI. Releasing needs `RELEASE_TOKEN`.
+`just release patch|minor|major` (or an exact `X.Y.Z`) branches from main, bumps the workspace version (both crates share it) and `Cargo.lock`, `deploy/pulumi/package.json` and its lockfile, and `APP_VERSION` in `deploy/pulumi/src/versions.ts`, turns the unreleased fragments into the version and opens the release PR. The three numbers are one: the package deploys the image by `APP_VERSION`, and CI fails any commit where they disagree. Merging the PR is the release: CI pushes the image's semver tags, then publishes the Pulumi package, then creates the GitHub release with the binaries and the changelog section as notes. A push releases only when it changes the version; `gh workflow run ci-cd.yml` on main retries a release that failed part way. The Release workflow (`gh workflow run release.yml -f bump=patch`) opens the same PR from CI. Releasing needs `RELEASE_TOKEN`.
 
 ## CI/CD
 

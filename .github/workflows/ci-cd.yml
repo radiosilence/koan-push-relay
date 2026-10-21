@@ -35,10 +35,10 @@ env:
 # how a failed release is retried. The group is chosen before any job runs, so
 # it cannot ask `changes`: a push may release when its head commit is titled
 # `release: ` (as `just release` names its pull request) or changes the
-# koan-push-relay crate's manifest, where the version lives.
+# workspace manifest, where the version lives.
 concurrency:
-  group: "ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || (startsWith(github.event.head_commit.message, 'release: ') || contains(github.event.head_commit.modified, 'crates/koan-push-relay/Cargo.toml')) && format('release-{0}', github.sha) || 'main' }}"
-  cancel-in-progress: "${{ github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'release: ') && !contains(github.event.head_commit.modified, 'crates/koan-push-relay/Cargo.toml')) }}"
+  group: "ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || (startsWith(github.event.head_commit.message, 'release: ') || contains(github.event.head_commit.modified, 'Cargo.toml')) && format('release-{0}', github.sha) || 'main' }}"
+  cancel-in-progress: "${{ github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'release: ') && !contains(github.event.head_commit.modified, 'Cargo.toml')) }}"
 
 jobs:
   # ── CI ──────────────────────────────────────────────────────────────────
@@ -111,9 +111,9 @@ jobs:
           # releases. Only a 404 means the version is not out: any other
           # error fails this job, since guessing either way releases twice or
           # never.
-          version=$(version_of < crates/koan-push-relay/Cargo.toml)
+          version=$(version_of < Cargo.toml)
           bumped=false
-          if [ "$(git show HEAD^1:crates/koan-push-relay/Cargo.toml 2>/dev/null | version_of)" != "$version" ]; then
+          if [ "$(git show HEAD^1:Cargo.toml 2>/dev/null | version_of)" != "$version" ]; then
             bumped=true
           fi
           case "$EVENT" in
@@ -192,7 +192,7 @@ jobs:
           done | sort -u | while read -r id event sha; do
             if [ "$event" = push ]; then
               files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.files[].filename') || continue
-              if grep -qx 'crates/koan-push-relay/Cargo.toml' <<< "$files"; then
+              if grep -qx 'Cargo.toml' <<< "$files"; then
                 continue
               fi
             fi
