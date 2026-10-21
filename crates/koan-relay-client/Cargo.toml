@@ -13,9 +13,10 @@ categories = ["api-bindings"]
 default = ["client"]
 # The blocking HTTP client. Without it, the crate is the relay's types alone,
 # which is what the relay itself uses.
-client = ["dep:hex", "dep:reqwest", "dep:serde_json", "dep:url"]
+client = ["dep:base64", "dep:hex", "dep:reqwest", "dep:serde_json", "dep:url"]
 
 [dependencies]
+base64 = { version = "0.23", optional = true }
 hex = { version = "0.4", optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"], optional = true }
 serde = { version = "1.0.229", features = ["derive"] }

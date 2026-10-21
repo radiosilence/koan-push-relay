@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "client")]
 mod client;
 #[cfg(feature = "client")]
-pub use client::{Client, Error, Push};
+pub use client::{Assertion, Client, Error, Push};
 
 /// The relay kōan's apps use.
 pub const DEFAULT_URL: &str = "https://push.koan.rocks";
@@ -84,6 +84,27 @@ pub struct Registered {
 impl std::fmt::Debug for Registered {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Registered")
+            .field("expires", &self.expires)
+            .finish_non_exhaustive()
+    }
+}
+
+/// An App Attest key the relay has verified. Its `Debug` hides the key.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attested {
+    /// For `register_attested`: the key, sealed by the relay.
+    pub key: String,
+    /// Apple's production environment, rather than development.
+    pub production: bool,
+    /// Unix seconds after which the relay no longer takes it: attest a new
+    /// key before then.
+    pub expires: u64,
+}
+
+impl std::fmt::Debug for Attested {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Attested")
+            .field("production", &self.production)
             .field("expires", &self.expires)
             .finish_non_exhaustive()
     }
