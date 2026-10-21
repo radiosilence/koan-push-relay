@@ -3,7 +3,8 @@
 //! Everything Apple is sent is written here. A sender chooses only the kind
 //! of push and, for a notification, an opaque blob the app's notification
 //! service extension decrypts; when that fails, the text below is what the
-//! person sees.
+//! person sees. For a Live Activity, a sender chooses the fields of its
+//! state, which `activity` bounds.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -14,6 +15,7 @@ use parking_lot::RwLock;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::activity::{ActivityState, STALE_SECS};
 use crate::config::{ApnsConfig, ApnsKey};
 use crate::handle::Slot;
 use crate::quota::Clock;
@@ -46,10 +48,18 @@ pub enum Kind {
     Summon,
     /// A notification carrying a command the app runs when it is tapped.
     Notify,
+    /// An update to a Live Activity, through a handle for its token.
+    Activity,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 4] = [Kind::Wake, Kind::WakeNow, Kind::Summon, Kind::Notify];
+    pub const ALL: [Kind; 5] = [
+        Kind::Wake,
+        Kind::WakeNow,
+        Kind::Summon,
+        Kind::Notify,
+        Kind::Activity,
+    ];
 
     pub fn is_alert(self) -> bool {
         matches!(self, Kind::Summon | Kind::Notify)
@@ -61,8 +71,18 @@ impl Kind {
             Kind::WakeNow => "wake-now",
             Kind::Summon => "summon",
             Kind::Notify => "notify",
+            Kind::Activity => "activity",
         }
     }
+}
+
+/// What a push carries besides what the relay writes.
+pub enum Content {
+    None,
+    /// For a notification: what the app's extension decrypts, base64url.
+    Blob(String),
+    /// For a Live Activity: its state, already bounded.
+    Activity(ActivityState),
 }
 
 /// What became of a push.
@@ -302,7 +322,7 @@ impl Apns {
         }
     }
 
-    pub async fn send(&self, to: &Target<'_>, kind: Kind, blob: Option<&str>) -> Delivery {
+    pub async fn send(&self, to: &Target<'_>, kind: Kind, content: &Content) -> Delivery {
         let Some(gateway) = self.gateway(to.sandbox) else {
             return Delivery::Unserved;
         };
@@ -314,7 +334,12 @@ impl Apns {
             Err(e) => return Delivery::Unavailable(format!("signing: {e}")),
         };
         let h = headers(kind, to.slot);
-        let response = gateway
+        // A Live Activity's pushes go to the app's topic with a suffix.
+        let topic = match kind {
+            Kind::Activity => format!("{}.push-type.liveactivity", self.topic),
+            _ => self.topic.clone(),
+        };
+        let request = gateway
             .client()
             .post(format!(
                 "{}/3/device/{}",
@@ -322,12 +347,16 @@ impl Apns {
                 hex::encode(to.token)
             ))
             .header("authorization", format!("bearer {bearer}"))
-            .header("apns-topic", &self.topic)
+            .header("apns-topic", topic)
             .header("apns-push-type", h.push_type)
             .header("apns-priority", h.priority)
-            .header("apns-expiration", (unix_now() + h.expires_in).to_string())
-            .header("apns-collapse-id", h.collapse)
-            .json(&payload(kind, to.slot, blob))
+            .header("apns-expiration", (unix_now() + h.expires_in).to_string());
+        let request = match h.collapse {
+            Some(id) => request.header("apns-collapse-id", id),
+            None => request,
+        };
+        let response = request
+            .json(&payload(kind, to.slot, content, unix_now()))
             .send()
             .await;
         let response = match response {
@@ -406,25 +435,30 @@ struct Headers {
     priority: &'static str,
     expires_in: u64,
     /// Pushes with one id replace each other on the way rather than queue.
-    collapse: String,
+    collapse: Option<String>,
 }
 
 fn headers(kind: Kind, slot: Option<&Slot>) -> Headers {
     // A server's notifications replace its own, never another server's.
-    let from = |prefix: &str| match slot {
-        Some(slot) => format!("{prefix}-{}", hex::encode(slot)),
-        None => prefix.to_string(),
+    let from = |prefix: &str| {
+        Some(match slot {
+            Some(slot) => format!("{prefix}-{}", hex::encode(slot)),
+            None => prefix.to_string(),
+        })
     };
     let (push_type, priority, expires_in, collapse) = match kind {
         // Low priority is the only priority a background push may have.
-        Kind::Wake => ("background", "5", 60 * 60, "koan-wake".to_string()),
+        Kind::Wake => ("background", "5", 60 * 60, Some("koan-wake".to_string())),
         // Its own collapse id: replacing a queued `wake` with a push that
         // expires in a minute would lose the wake.
-        Kind::WakeNow => ("background", "5", 60, "koan-wake-now".to_string()),
+        Kind::WakeNow => ("background", "5", 60, Some("koan-wake-now".to_string())),
         Kind::Summon => ("alert", "10", 2 * 60, from("koan-summon")),
         // "Play this" an hour late is not what anyone asked for, and a newer
         // request replaces an older one rather than stacking.
         Kind::Notify => ("alert", "10", 10 * 60, from("koan-play")),
+        // Stale within the minute: the device will have moved on. Apple
+        // orders an activity's updates by their timestamp, so none collapse.
+        Kind::Activity => ("liveactivity", "10", 60, None),
     };
     Headers {
         push_type,
@@ -434,10 +468,23 @@ fn headers(kind: Kind, slot: Option<&Slot>) -> Headers {
     }
 }
 
-/// The JSON Apple is sent. Nothing in it but the blob comes from the sender;
-/// `koan-from` is the slot sealed in the handle the push came through, which
-/// the app maps to the server it gave that handle, whatever the blob says.
-pub fn payload(kind: Kind, slot: Option<&Slot>, blob: Option<&str>) -> Value {
+/// The JSON Apple is sent, `now` in Unix seconds. Nothing in it but the blob
+/// or an activity's bounded state comes from the sender; `koan-from` is the
+/// slot sealed in the handle the push came through, which the app maps to the
+/// server it gave that handle, whatever the blob says.
+pub fn payload(kind: Kind, slot: Option<&Slot>, content: &Content, now: u64) -> Value {
+    if let (Kind::Activity, Content::Activity(state)) = (kind, content) {
+        return json!({
+            "aps": {
+                "timestamp": state.at as u64,
+                "event": "update",
+                "content-state": state,
+                // The relay's clock, not the sender's: past this the lock
+                // screen dims it, as nothing has been heard.
+                "stale-date": now + STALE_SECS,
+            },
+        });
+    }
     if !kind.is_alert() {
         return json!({ "aps": { "content-available": 1 } });
     }
@@ -454,7 +501,7 @@ pub fn payload(kind: Kind, slot: Option<&Slot>, blob: Option<&str>) -> Value {
     if let Some(slot) = slot {
         body["koan-from"] = json!(hex::encode(slot));
     }
-    if let Some(blob) = blob {
+    if let Content::Blob(blob) = content {
         // Hands the notification to the service extension, which shows its
         // own template in place of the text above only if the blob decrypts.
         body["aps"]["mutable-content"] = json!(1);
@@ -475,22 +522,28 @@ mod tests {
     use super::*;
 
     const SLOT: Slot = [0x5a; 16];
+    const NOW: u64 = 1_800_000_000;
 
     #[test]
     fn a_wake_carries_nothing() {
         assert_eq!(
-            payload(Kind::Wake, Some(&SLOT), None),
+            payload(Kind::Wake, Some(&SLOT), &Content::None, NOW),
             json!({ "aps": { "content-available": 1 } })
         );
         assert_eq!(
-            payload(Kind::WakeNow, None, None),
-            payload(Kind::Wake, Some(&SLOT), None)
+            payload(Kind::WakeNow, None, &Content::None, NOW),
+            payload(Kind::Wake, Some(&SLOT), &Content::None, NOW)
         );
     }
 
     #[test]
     fn a_notification_shows_the_relays_text_and_says_who_sent_it() {
-        let body = payload(Kind::Notify, Some(&SLOT), Some("ciphertext"));
+        let body = payload(
+            Kind::Notify,
+            Some(&SLOT),
+            &Content::Blob("ciphertext".into()),
+            NOW,
+        );
         assert_eq!(body["aps"]["alert"]["title"], ALERT_TITLE);
         assert_eq!(body["aps"]["alert"]["body"], ALERT_BODY);
         assert_eq!(body["aps"]["interruption-level"], "active");
@@ -502,7 +555,7 @@ mod tests {
 
     #[test]
     fn a_notification_without_a_blob_is_not_handed_to_the_extension() {
-        let body = payload(Kind::Summon, Some(&SLOT), None);
+        let body = payload(Kind::Summon, Some(&SLOT), &Content::None, NOW);
         assert!(body["aps"].get("mutable-content").is_none());
         assert!(body.get("koan-e2e").is_none());
     }
@@ -510,7 +563,73 @@ mod tests {
     #[test]
     fn the_largest_payload_fits_apples_limit() {
         let blob = "A".repeat(MAX_BLOB);
-        let bytes = serde_json::to_vec(&payload(Kind::Notify, Some(&SLOT), Some(&blob))).unwrap();
+        let bytes = serde_json::to_vec(&payload(
+            Kind::Notify,
+            Some(&SLOT),
+            &Content::Blob(blob),
+            NOW,
+        ))
+        .unwrap();
+        assert!(bytes.len() <= 4096, "{} bytes", bytes.len());
+    }
+
+    fn activity() -> ActivityState {
+        ActivityState {
+            device: "Desk".into(),
+            linked: true,
+            title: Some("Blue in Green".into()),
+            artist: None,
+            album: None,
+            playing: true,
+            position_ms: 0,
+            duration_ms: 1000,
+            at: NOW as f64 - 5.0,
+            art: None,
+        }
+    }
+
+    #[test]
+    fn an_activity_update_carries_its_state_and_the_relays_stale_date() {
+        let body = payload(
+            Kind::Activity,
+            Some(&SLOT),
+            &Content::Activity(activity()),
+            NOW,
+        );
+        assert_eq!(body["aps"]["event"], "update");
+        assert_eq!(body["aps"]["timestamp"], NOW - 5);
+        assert_eq!(body["aps"]["stale-date"], NOW + STALE_SECS);
+        assert_eq!(body["aps"]["content-state"]["title"], "Blue in Green");
+        assert!(body["aps"].get("alert").is_none());
+        assert_eq!(body.as_object().unwrap().len(), 1);
+        let h = headers(Kind::Activity, Some(&SLOT));
+        assert_eq!(
+            (h.push_type, h.priority, h.collapse),
+            ("liveactivity", "10", None)
+        );
+    }
+
+    #[test]
+    fn the_largest_activity_fits_apples_limit() {
+        // Three bytes a character, as many as fit.
+        let fill = |bytes: usize| "\u{3042}".repeat(bytes / 3);
+        let state = ActivityState {
+            device: fill(crate::activity::MAX_DEVICE),
+            title: Some(fill(crate::activity::MAX_TEXT)),
+            artist: Some(fill(crate::activity::MAX_TEXT)),
+            album: Some(fill(crate::activity::MAX_TEXT)),
+            position_ms: u64::MAX,
+            duration_ms: u64::MAX,
+            art: Some("A".repeat(crate::activity::MAX_ART)),
+            ..activity()
+        };
+        let bytes = serde_json::to_vec(&payload(
+            Kind::Activity,
+            Some(&SLOT),
+            &Content::Activity(state),
+            NOW,
+        ))
+        .unwrap();
         assert!(bytes.len() <= 4096, "{} bytes", bytes.len());
     }
 

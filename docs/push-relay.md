@@ -2,7 +2,7 @@
 
 Apple delivers pushes to the kōan iOS app only when they are signed with a key belonging to the developer's team, so a self-hosted kōan server cannot wake a suspended iPhone or ask it to play on its own. The push relay at `push.koan.rocks` holds a topic-specific key of its own and forwards pushes for any server.
 
-The key belongs to the developer's Apple account, which answers to Apple for every push sent under it, so the relay is built to bound what anyone can cause through it. The worst a hostile server can do is make a phone show kōan's own text, within small quotas, to people who chose to sign in to it. Nobody can make the relay send Apple a flood, a stream of errors, or anything a server wrote.
+The key belongs to the developer's Apple account, which answers to Apple for every push sent under it, so the relay is built to bound what anyone can cause through it. The worst a hostile server can do is make a phone show kōan's own text, within small quotas, to people who chose to sign in to it, and put words of its own, bounded, on a Live Activity one of those people started. Nobody can make the relay send Apple a flood, a stream of errors, or anything a server wrote.
 
 That bound holds only together with the app: its notification service extension shows nothing a server wrote, only its own template (see [What a phone shows](#what-a-phone-shows)).
 
@@ -88,6 +88,18 @@ Called by the app.
 
 The answer is `204` once the revocation is on disk. `400` means what was sent is a handle, not a revoker; `410` that the revoker does not open (unknown, altered, expired, or already revoked); `429` and `503` are as for a push.
 
+### `POST /v1/register-activity`
+
+Called by the app, for a Live Activity it has started, with the activity's push token.
+
+```json
+{ "revoker": "<revoker>", "token": "<activity token, hex>", "slot": "<16 bytes, hex>" }
+```
+
+The answer is `200` with `{ "handle": "<handle>", "expires": <unix seconds> }`, a handle the app gives the server whose slot it names, to push the activity's updates through. Only the app holds a revoker, so only the app can register an activity. The relay sends no proof: an activity's token takes only Live Activity pushes, and one would show on the lock screen.
+
+The handle seals the activity's token with its device's token hash, so the device's revocation retires it, the device's quotas count it, and it is for the revoker's gateway. `400` means what was sent is a handle, not a revoker, or the token or slot is malformed; `410` that the revoker does not open or the relay no longer serves its gateway.
+
 ### `POST /v1/push`
 
 Called by servers. There is no other authentication: the handle is the capability, and quotas bound what holding one is worth.
@@ -96,16 +108,34 @@ Called by servers. There is no other authentication: the handle is the capabilit
 { "handle": "<handle>", "kind": "notify", "blob": "<base64url>" }
 ```
 
+or, through an activity's handle:
+
+```json
+{ "handle": "<handle>", "kind": "activity", "state": { "device": "Desk", "linked": true, "title": "…", "artist": "…", "album": "…", "playing": true, "positionMs": 0, "durationMs": 0, "at": 1767225600.5, "art": "<base64 JPEG>" } }
+```
+
 | `kind` | Apple push | What the phone gets |
 |--------|------------|---------------------|
 | `wake` | background, low priority, collapse id `koan-wake`, expires in an hour | `content-available` and nothing else: the app wakes, links and takes what waits for it |
 | `wake-now` | as `wake`, collapse id `koan-wake-now`, expires in a minute | the same, for a wake that is no use late |
 | `summon` | alert, collapse id `koan-summon-<slot>`, expires in two minutes | the relay's notification |
 | `notify` | alert, collapse id `koan-play-<slot>`, expires in ten minutes | the relay's notification |
+| `activity` | Live Activity update, to the topic with `.push-type.liveactivity`, expires in a minute | the activity, drawn from `state` by the app's widget |
 
 A notification's collapse id carries its server's slot, so one server's notification replaces only that server's last one.
 
 The relay's notification is titled "kōan", reads "Something is waiting to play. Tap to open.", plays the default sound and has the interruption level `active`: never `time-sensitive`, since the relay cannot vouch for the server, so it does not break through a Focus. It carries the slot as `koan-from`. A `summon` or `notify` may carry `blob`, at most 3072 base64url characters, which the relay passes to the app under `koan-e2e` with `mutable-content` set. A `wake` or `wake-now` with a blob is refused with `400`. The relay does not read the blob.
+
+An `activity` goes only through an activity's handle, and only it does; it carries `state` and nothing else does. iOS draws a Live Activity's state in the app's widget without passing it through the app, so it cannot be encrypted, and the relay bounds it instead:
+
+- `state` has the fields the widget's `ContentState` has, and an unknown field is refused with `400`;
+- `device` is cut to 48 bytes and `title`, `artist` and `album` to 256, at a character, with control and formatting characters (those that reorder or hide text among them) removed and whitespace made single spaces;
+- `art` must be base64 of a JPEG, at most 2600 characters, or the update is refused with `400`;
+- `durationMs` is at most a day and `positionMs` at most `durationMs`;
+- `at`, when the position was true, is the relay's time if the server's is over an hour behind it or a minute ahead;
+- the update's `timestamp` is `at`, and its `stale-date`, when the lock screen dims it, eight hours from the relay's clock.
+
+Apple answering that an activity's token is gone means the activity has ended: the push is answered `410` and the device is left as it was.
 
 | Status | Meaning | What the server does |
 |--------|---------|----------------------|
@@ -126,7 +156,7 @@ The extension decrypts the blob, but decrypting proves only that the sender hold
 - Tapping runs only playback commands.
 - When the blob does not decrypt, or `koan-from` names no server the app knows, the relay's text stands and tapping opens the app.
 
-Live Activity updates are not relayed. ActivityKit renders their content without passing it through the app, so they cannot be encrypted or constrained.
+A Live Activity shows the state the relay bounded, through the widget's own layout. The words in it are a server's, within those bounds: a server the person signed in to can name a track what it likes on their lock screen, as it can in its library.
 
 ## Quotas
 
@@ -139,6 +169,8 @@ Each relay process counts:
 | Device, across its servers: notifications | 20 an hour |
 | Device, across its servers: wakes, proofs of registration included | 30 an hour |
 | Device: revocations | 10 an hour |
+| Server's handle: Live Activity updates | 120 an hour |
+| Device, across its servers: Live Activity updates | 240 an hour |
 | Caller address: pushes | 6000 a minute |
 | Caller address: registrations | 120 a minute |
 | Caller address: revocations | 60 a minute |
@@ -157,7 +189,7 @@ When Apple refuses a gateway's credential (an invalid, missing or over-refreshed
 
 ## What the relay sees and keeps
 
-It sees, per request: a device token (registration and revocation only), a handle, which it opens to a token in memory, the kind of push, an encrypted blob it cannot read, and the caller's address.
+It sees, per request: a device token or a Live Activity's (registration only), a handle or revoker, which it opens to a token in memory, the kind of push, an encrypted blob it cannot read, a Live Activity's state, and the caller's address.
 
 It keeps:
 
@@ -218,6 +250,8 @@ handle_wakes_per_hour = 12
 device_alerts_per_hour = 20
 device_wakes_per_hour = 30
 device_revocations_per_hour = 10
+handle_activity_per_hour = 120
+device_activity_per_hour = 240
 ip_pushes_per_minute = 6000
 ip_registrations_per_minute = 120
 ip_revocations_per_minute = 60

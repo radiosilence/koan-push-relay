@@ -176,6 +176,27 @@ impl Harness {
         (field("handle"), field("revoker"))
     }
 
+    /// A handle for a Live Activity on the device `revoker` is for.
+    async fn register_activity(&self, revoker: &str, token: &str) -> String {
+        let r = self
+            .post(
+                "/v1/register-activity",
+                json!({ "revoker": revoker, "token": token, "slot": SLOT }),
+            )
+            .await;
+        assert_eq!(r.status(), 200);
+        let body: Value = r.json().await.unwrap();
+        body["handle"].as_str().unwrap().to_string()
+    }
+
+    async fn update(&self, handle: &str, state: Value) -> reqwest::Response {
+        self.post(
+            "/v1/push",
+            json!({ "handle": handle, "kind": "activity", "state": state }),
+        )
+        .await
+    }
+
     async fn push(&self, handle: &str, kind: &str, blob: Option<&str>) -> reqwest::Response {
         let mut body = json!({ "handle": handle, "kind": kind });
         if let Some(blob) = blob {
@@ -340,7 +361,12 @@ async fn a_sender_that_hangs_up_still_pays() {
 async fn only_json_is_taken() {
     let h = Harness::start(|_| {}).await;
     let handle = h.register(TOKEN).await;
-    for path in ["/v1/register", "/v1/revoke", "/v1/push"] {
+    for path in [
+        "/v1/register",
+        "/v1/revoke",
+        "/v1/push",
+        "/v1/register-activity",
+    ] {
         // What a web page can send a visitor's browser without a preflight.
         let r = h
             .http
@@ -1034,4 +1060,146 @@ async fn metrics_count_outcomes_and_nothing_else() {
     assert!(text.contains(r#"koan_relay_requests_total{route="push",outcome="gone"} 1"#));
     assert!(text.contains(r#"koan_relay_pushes_sent_total{kind="wake"} 1"#));
     assert!(!text.contains(TOKEN) && !text.contains(&handle));
+}
+
+/// A Live Activity's token, which Apple's are longer than a device's.
+const ACTIVITY: &str = "80aa9f2c8e3b1d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+
+fn now_secs() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+}
+
+fn state() -> Value {
+    json!({
+        "device": "Desk",
+        "linked": true,
+        "title": "Blue\u{202E} in\n\nGreen",
+        "artist": "Miles Davis",
+        "playing": true,
+        "positionMs": 1000,
+        "durationMs": 337000,
+        "at": now_secs(),
+    })
+}
+
+#[tokio::test]
+async fn an_activity_update_reaches_apple_on_the_activity_topic_bounded() {
+    let h = Harness::start(|_| {}).await;
+    let (_, revoker) = h.register_with_revoker(TOKEN, SLOT).await;
+    let activity = h.register_activity(&revoker, ACTIVITY).await;
+    assert!(!activity.contains(ACTIVITY));
+
+    assert_eq!(h.update(&activity, state()).await.status(), 204);
+    let got = h.gateway.received().last().cloned().unwrap();
+    assert_eq!(got.token, ACTIVITY);
+    assert_eq!(
+        got.headers["apns-topic"],
+        "cc.blit.koan.push-type.liveactivity"
+    );
+    assert_eq!(got.headers["apns-push-type"], "liveactivity");
+    assert!(got.headers.get("apns-collapse-id").is_none());
+    let aps = &got.body["aps"];
+    assert_eq!(aps["event"], "update");
+    assert_eq!(aps["content-state"]["title"], "Blue in Green");
+    assert_eq!(aps["content-state"]["artist"], "Miles Davis");
+    assert!(aps["stale-date"].as_u64().unwrap() > now_secs() as u64 + 60 * 60);
+    assert!(aps.get("alert").is_none() && got.body.get("koan-e2e").is_none());
+}
+
+#[tokio::test]
+async fn activity_and_device_handles_are_not_interchangeable() {
+    let h = Harness::start(|_| {}).await;
+    let (handle, revoker) = h.register_with_revoker(TOKEN, SLOT).await;
+    let activity = h.register_activity(&revoker, ACTIVITY).await;
+    let sent = h.gateway.received().len();
+
+    assert_eq!(h.push(&activity, "notify", None).await.status(), 400);
+    assert_eq!(h.push(&activity, "wake", None).await.status(), 400);
+    assert_eq!(h.update(&handle, state()).await.status(), 400);
+    let bare = h
+        .post(
+            "/v1/push",
+            json!({ "handle": activity, "kind": "activity" }),
+        )
+        .await;
+    assert_eq!(bare.status(), 400);
+    let mut extra = state();
+    extra["alert"] = json!("hello");
+    assert_eq!(h.update(&activity, extra).await.status(), 400);
+    let mut svg = state();
+    svg["art"] = json!(STANDARD.encode(b"<svg onload=x></svg>"));
+    assert_eq!(h.update(&activity, svg).await.status(), 400);
+    let r = h
+        .post(
+            "/v1/push",
+            json!({ "handle": handle, "kind": "notify", "state": state() }),
+        )
+        .await;
+    assert_eq!(r.status(), 400);
+    assert_eq!(h.gateway.received().len(), sent, "none reached Apple");
+}
+
+#[tokio::test]
+async fn only_a_revoker_registers_an_activity() {
+    let h = Harness::start(|_| {}).await;
+    let (handle, _) = h.register_with_revoker(TOKEN, SLOT).await;
+    let r = h
+        .post(
+            "/v1/register-activity",
+            json!({ "revoker": handle, "token": ACTIVITY, "slot": SLOT }),
+        )
+        .await;
+    assert_eq!(r.status(), 400);
+    let r = h
+        .post(
+            "/v1/register-activity",
+            json!({ "revoker": "nonsense", "token": ACTIVITY, "slot": SLOT }),
+        )
+        .await;
+    assert_eq!(r.status(), 410);
+}
+
+#[tokio::test]
+async fn revoking_a_device_retires_its_activities() {
+    let h = Harness::start(|_| {}).await;
+    let (_, revoker) = h.register_with_revoker(TOKEN, SLOT).await;
+    let activity = h.register_activity(&revoker, ACTIVITY).await;
+    let r = h.post("/v1/revoke", json!({ "revoker": revoker })).await;
+    assert_eq!(r.status(), 204);
+    assert_eq!(h.update(&activity, state()).await.status(), 410);
+    let r = h
+        .post(
+            "/v1/register-activity",
+            json!({ "revoker": revoker, "token": ACTIVITY, "slot": SLOT }),
+        )
+        .await;
+    assert_eq!(r.status(), 410, "nor can a revoked revoker register one");
+}
+
+#[tokio::test]
+async fn an_ended_activity_leaves_its_device_alone() {
+    let h = Harness::start(|_| {}).await;
+    let (handle, revoker) = h.register_with_revoker(TOKEN, SLOT).await;
+    let activity = h.register_activity(&revoker, ACTIVITY).await;
+    h.gateway.answer(410, "Unregistered");
+    assert_eq!(h.update(&activity, state()).await.status(), 410);
+    h.gateway.accept();
+    assert_eq!(h.push(&handle, "wake", None).await.status(), 204);
+}
+
+#[tokio::test]
+async fn activity_updates_have_an_allowance_of_their_own() {
+    let h = Harness::start(|cfg| {
+        cfg.limits.handle_activity_per_hour = 2;
+    })
+    .await;
+    let (handle, revoker) = h.register_with_revoker(TOKEN, SLOT).await;
+    let activity = h.register_activity(&revoker, ACTIVITY).await;
+    assert_eq!(h.update(&activity, state()).await.status(), 204);
+    assert_eq!(h.update(&activity, state()).await.status(), 204);
+    assert_eq!(h.update(&activity, state()).await.status(), 429);
+    assert_eq!(h.push(&handle, "wake", None).await.status(), 204);
 }

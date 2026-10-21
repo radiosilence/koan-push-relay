@@ -171,6 +171,13 @@ pub struct Limits {
     /// Revocations one device can make an hour. Counted apart from its
     /// wakes, so a server spending those cannot stop the device revoking.
     pub device_revocations_per_hour: u32,
+    /// Live Activity updates sent through one handle an hour: one server's
+    /// allowance for one device's activities. A server sends one when what
+    /// the activity shows changes, a track or a pause, not as it plays.
+    pub handle_activity_per_hour: u32,
+    /// Live Activity updates one device's activities can be sent an hour,
+    /// from every server together.
+    pub device_activity_per_hour: u32,
     /// Pushes from one address a minute. A server with many listeners sends
     /// from one address, so this is generous.
     pub ip_pushes_per_minute: u32,
@@ -211,6 +218,8 @@ impl Default for Limits {
             device_alerts_per_hour: 20,
             device_wakes_per_hour: 30,
             device_revocations_per_hour: 10,
+            handle_activity_per_hour: 120,
+            device_activity_per_hour: 240,
             ip_pushes_per_minute: 6000,
             ip_registrations_per_minute: 120,
             ip_revocations_per_minute: 60,

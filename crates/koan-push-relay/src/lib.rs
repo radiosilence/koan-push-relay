@@ -15,10 +15,15 @@
 //! of Apple, a token Apple calls gone is retired, and a credential Apple
 //! refuses stops its gateway sending until a probe shows it is fixed.
 //!
+//! A Live Activity has a token of its own, which the app registers with its
+//! revoker. A server sends its updates as structured fields the relay bounds
+//! (`activity`), since iOS shows them without passing them through the app.
+//!
 //! Every push is answered from memory: handles carry their device, quotas are
 //! counters, and the revocation table is held whole. The disk is touched only
 //! to revoke.
 
+pub mod activity;
 pub mod apns;
 pub mod config;
 mod handle;
@@ -42,7 +47,8 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::apns::{Apns, Delivery, Kind, MAX_BLOB, Target};
+use crate::activity::ActivityState;
+use crate::apns::{Apns, Content, Delivery, Kind, MAX_BLOB, Target};
 use crate::config::{Config, secret};
 use crate::handle::{
     Handles, Invalid, MAX_LIFETIME_MS, MAX_TOKEN, MIN_TOKEN, SLOT_LEN, Slot, TokenHash, TokenHasher,
@@ -102,6 +108,8 @@ pub struct Relay {
     device_alerts: Keyed<TokenHash>,
     device_wakes: Keyed<TokenHash>,
     device_revocations: Keyed<TokenHash>,
+    handle_activity: Keyed<SlotKey>,
+    device_activity: Keyed<TokenHash>,
     ip_pushes: Keyed<u128>,
     ip_registrations: Keyed<u128>,
     ip_revocations: Keyed<u128>,
@@ -150,6 +158,8 @@ impl Relay {
             ("device_alerts_per_hour", l.device_alerts_per_hour),
             ("device_wakes_per_hour", l.device_wakes_per_hour),
             ("device_revocations_per_hour", l.device_revocations_per_hour),
+            ("handle_activity_per_hour", l.handle_activity_per_hour),
+            ("device_activity_per_hour", l.device_activity_per_hour),
             ("ip_pushes_per_minute", l.ip_pushes_per_minute),
             ("ip_registrations_per_minute", l.ip_registrations_per_minute),
             ("ip_revocations_per_minute", l.ip_revocations_per_minute),
@@ -198,6 +208,8 @@ impl Relay {
                 Rate::per(l.device_revocations_per_hour, HOUR),
                 l.max_tracked,
             ),
+            handle_activity: Keyed::new(Rate::per(l.handle_activity_per_hour, HOUR), l.max_tracked),
+            device_activity: Keyed::new(Rate::per(l.device_activity_per_hour, HOUR), l.max_tracked),
             ip_pushes: Keyed::new(Rate::per(l.ip_pushes_per_minute, MINUTE), l.max_tracked),
             ip_registrations: Keyed::new(
                 Rate::per(l.ip_registrations_per_minute, MINUTE),
@@ -280,6 +292,8 @@ impl Relay {
         self.device_alerts.sweep(now);
         self.device_wakes.sweep(now);
         self.device_revocations.sweep(now);
+        self.handle_activity.sweep(now);
+        self.device_activity.sweep(now);
         self.ip_pushes.sweep(now);
         self.ip_registrations.sweep(now);
         self.ip_revocations.sweep(now);
@@ -292,6 +306,8 @@ impl Relay {
             Allowance::HandleWakes(k) => self.handle_wakes.check(k, now).map_err(limited),
             Allowance::DeviceAlerts(k) => self.device_alerts.check(k, now).map_err(limited),
             Allowance::DeviceWakes(k) => self.device_wakes.check(k, now).map_err(limited),
+            Allowance::HandleActivity(k) => self.handle_activity.check(k, now).map_err(limited),
+            Allowance::DeviceActivity(k) => self.device_activity.check(k, now).map_err(limited),
             Allowance::Global => self.global.check(now).map_err(|_| Refusal::Busy),
             Allowance::Proofs => self.proofs.check(now).map_err(|_| Refusal::Busy),
             Allowance::RefusedFrom(k) => self.ip_bad_tokens.check(k, now).map_err(limited),
@@ -305,6 +321,8 @@ impl Relay {
             Allowance::HandleWakes(k) => self.handle_wakes.refund(&k),
             Allowance::DeviceAlerts(k) => self.device_alerts.refund(&k),
             Allowance::DeviceWakes(k) => self.device_wakes.refund(&k),
+            Allowance::HandleActivity(k) => self.handle_activity.refund(&k),
+            Allowance::DeviceActivity(k) => self.device_activity.refund(&k),
             Allowance::Global => self.global.refund(),
             Allowance::Proofs => self.proofs.refund(),
             Allowance::RefusedFrom(k) => self.ip_bad_tokens.refund(&k),
@@ -331,6 +349,8 @@ enum Allowance {
     HandleWakes(SlotKey),
     DeviceAlerts(TokenHash),
     DeviceWakes(TokenHash),
+    HandleActivity(SlotKey),
+    DeviceActivity(TokenHash),
     Global,
     Proofs,
     /// A proof's room in its caller's count of refused tokens, and in
@@ -395,7 +415,7 @@ struct Job {
     sandbox: bool,
     slot: Option<Slot>,
     kind: Kind,
-    blob: Option<String>,
+    content: Content,
     device: TokenHash,
     /// Whether this is the relay's own proof of a token.
     proof: bool,
@@ -421,7 +441,7 @@ impl Relay {
                 sandbox: job.sandbox,
                 slot: job.slot.as_ref(),
             };
-            let delivery = relay.apns.send(&to, job.kind, job.blob.as_deref()).await;
+            let delivery = relay.apns.send(&to, job.kind, &job.content).await;
             let now = relay.clock.now();
             match (&delivery, job.proof) {
                 (Delivery::Sent, false) => {
@@ -435,6 +455,14 @@ impl Relay {
                 }
                 (Delivery::Throttled, _) => {
                     charge.not_refused();
+                    charge.spent = true;
+                }
+                // An activity that has ended: its handle is no use any more,
+                // but the device is as it was, and Apple has said nothing
+                // about the relay.
+                (Delivery::Unregistered | Delivery::BadToken, false)
+                    if job.kind == Kind::Activity =>
+                {
                     charge.spent = true;
                 }
                 // A device the app has left, or a proven token Apple now
@@ -541,7 +569,7 @@ impl Relay {
             sandbox,
             slot: None,
             kind: Kind::WakeNow,
-            blob: None,
+            content: Content::None,
             device,
             proof: true,
         };
@@ -563,6 +591,7 @@ pub fn router(relay: Arc<Relay>) -> Router {
     Router::new()
         .route("/v1/register", post(register))
         .route("/v1/revoke", post(revoke))
+        .route("/v1/register-activity", post(register_activity))
         .route("/v1/push", post(push))
         .route("/healthz", get(|| async { "ok" }))
         .with_state(relay)
@@ -714,6 +743,24 @@ struct RevokeRequest {
     revoker: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegisterActivityRequest {
+    /// The device's revoker: only the app holds one, so only the app can
+    /// register its activities.
+    revoker: String,
+    /// The Live Activity's push token, hex.
+    token: String,
+    /// The slot of the server the handle is for, hex.
+    slot: String,
+}
+
+#[derive(Serialize)]
+struct RegisteredActivity {
+    handle: String,
+    expires: u64,
+}
+
 #[derive(Serialize)]
 struct Registered {
     handle: String,
@@ -732,6 +779,9 @@ struct PushRequest {
     /// For a notification: what the app's extension decrypts, base64url.
     #[serde(default)]
     blob: Option<String>,
+    /// For a Live Activity: what it shows.
+    #[serde(default)]
+    state: Option<ActivityState>,
 }
 
 async fn register(
@@ -837,6 +887,62 @@ async fn revoke(
     relay.answer(Route::Revoke, answer)
 }
 
+async fn register_activity(
+    State(relay): State<Arc<Relay>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let answer = async {
+        json_only(&headers)?;
+        let caller = relay.caller(&headers, peer, PROOF_PREFIX)?;
+        relay
+            .ip_registrations
+            .check(caller, relay.clock.now())
+            .map_err(limited)?;
+        let req: RegisterActivityRequest = read(body).await?;
+        let _working = relay.requests.try_acquire().map_err(|_| Refusal::Busy)?;
+        let token = device_token(&req.token)?;
+        let slot = slot(&req.slot)?;
+        // No proof: an activity's token takes only Live Activity pushes, and
+        // one would show on the lock screen. The revoker stands for it: the
+        // relay minted it only for a device Apple accepted, and only the app
+        // holds it.
+        let revoker = relay
+            .handles
+            .open(&req.revoker, unix_ms())
+            .map_err(|e| match e {
+                Invalid::Future => Refusal::Busy,
+                _ => Refusal::Gone,
+            })?;
+        if !revoker.revoker {
+            return Err(Refusal::Bad("not a revoker"));
+        }
+        let device = relay.hasher.hash(&revoker.token);
+        if relay.revocations.revoked(&device, revoker.minted_ms)
+            || relay.gone.lock().contains(&device)
+        {
+            return Err(Refusal::Gone);
+        }
+        if !relay.apns.serves(revoker.sandbox) {
+            return Err(Refusal::Gone);
+        }
+        // Never before the revoker: minted past the device's last
+        // revocation, as the revoker was.
+        let minted = unix_ms().max(revoker.minted_ms);
+        relay.revocations.minted(unix_ms());
+        Ok(Json(RegisteredActivity {
+            handle: relay
+                .handles
+                .seal_activity(&token, &device, &slot, revoker.sandbox, minted),
+            expires: (minted + relay.handles.lifetime_ms()) / 1000,
+        })
+        .into_response())
+    }
+    .await;
+    relay.answer(Route::RegisterActivity, answer)
+}
+
 async fn push(
     State(relay): State<Arc<Relay>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -852,6 +958,16 @@ async fn push(
             .map_err(limited)?;
         let req: PushRequest = read(body).await?;
         let _working = relay.requests.try_acquire().map_err(|_| Refusal::Busy)?;
+        let state = match (req.kind, req.state) {
+            (Kind::Activity, Some(state)) => Some(
+                state
+                    .bounded(unix_ms() as f64 / 1000.0)
+                    .map_err(Refusal::Bad)?,
+            ),
+            (Kind::Activity, None) => return Err(Refusal::Bad("an activity update needs a state")),
+            (_, Some(_)) => return Err(Refusal::Bad("only an activity update carries a state")),
+            (_, None) => None,
+        };
         if let Some(blob) = &req.blob {
             if !req.kind.is_alert() {
                 return Err(Refusal::Bad("only a notification carries a blob"));
@@ -870,7 +986,15 @@ async fn push(
         if device.revoker {
             return Err(Refusal::Bad("a revoker is not a handle"));
         }
-        let hash = relay.hasher.hash(&device.token);
+        if device.activity_of.is_some() != (req.kind == Kind::Activity) {
+            return Err(Refusal::Bad(
+                "activity updates go through an activity's handle, and only they do",
+            ));
+        }
+        // An activity is counted, and revoked, as the device it is on.
+        let hash = device
+            .activity_of
+            .unwrap_or_else(|| relay.hasher.hash(&device.token));
         if relay.revocations.revoked(&hash, device.minted_ms) || relay.gone.lock().contains(&hash) {
             return Err(Refusal::Gone);
         }
@@ -879,10 +1003,15 @@ async fn push(
         // its own cannot spend another's; the device's ceiling bounds them
         // together.
         let key = (hash, device.slot);
-        let (per_server, per_device) = if req.kind.is_alert() {
-            (Allowance::HandleAlerts(key), Allowance::DeviceAlerts(hash))
-        } else {
-            (Allowance::HandleWakes(key), Allowance::DeviceWakes(hash))
+        let (per_server, per_device) = match req.kind {
+            Kind::Activity => (
+                Allowance::HandleActivity(key),
+                Allowance::DeviceActivity(hash),
+            ),
+            kind if kind.is_alert() => {
+                (Allowance::HandleAlerts(key), Allowance::DeviceAlerts(hash))
+            }
+            _ => (Allowance::HandleWakes(key), Allowance::DeviceWakes(hash)),
         };
         let now = relay.clock.now();
         let mut charge = Charge::new(&relay);
@@ -899,7 +1028,11 @@ async fn push(
             sandbox: device.sandbox,
             slot: Some(device.slot),
             kind: req.kind,
-            blob: req.blob,
+            content: match (req.blob, state) {
+                (Some(blob), _) => Content::Blob(blob),
+                (None, Some(state)) => Content::Activity(state),
+                (None, None) => Content::None,
+            },
             device: hash,
             proof: false,
         };

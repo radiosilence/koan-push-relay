@@ -14,11 +14,17 @@
 //! sends, so the app knows which server a push came through without taking
 //! the server's word for it.
 //!
+//! A Live Activity has a token of its own, which the app registers with a
+//! revoker. Its handle carries the device's token hash beside the activity's
+//! token, so the device's revocations and quotas reach the activity too.
+//!
 //! Layout, base64url without padding:
 //!
 //! ```text
-//! version (1) | key id (1) | nonce (12) | AES-256-GCM-SIV( flags (1) | minted ms (8, BE) | slot (16) | token ) | tag (16)
+//! version (1) | key id (1) | nonce (12) | AES-256-GCM-SIV( flags (1) | minted ms (8, BE) | slot (16) | [device hash (16)] | token ) | tag (16)
 //! ```
+//!
+//! The device hash is there only when the activity flag is.
 //!
 //! The version and key id are authenticated as associated data. GCM-SIV
 //! because the nonces are random: a repeated nonce costs it nothing beyond
@@ -38,6 +44,10 @@ pub const SLOT_LEN: usize = 16;
 const FIXED_LEN: usize = 1 + 8 + SLOT_LEN;
 const SANDBOX: u8 = 1;
 const REVOKER: u8 = 2;
+/// A handle for a Live Activity's token, which also carries its device's
+/// token hash, so the device's revocations and quotas reach it.
+const ACTIVITY: u8 = 4;
+const HASH_LEN: usize = 16;
 
 /// The shortest and longest device token accepted, in bytes. Apple's are 32
 /// today and documented as variable in length.
@@ -45,7 +55,8 @@ pub const MIN_TOKEN: usize = 8;
 pub const MAX_TOKEN: usize = 100;
 
 /// The longest handle, encoded, so a request can be refused before decoding.
-pub const MAX_HANDLE_LEN: usize = (HEADER_LEN + FIXED_LEN + MAX_TOKEN + TAG_LEN).div_ceil(3) * 4;
+pub const MAX_HANDLE_LEN: usize =
+    (HEADER_LEN + FIXED_LEN + HASH_LEN + MAX_TOKEN + TAG_LEN).div_ceil(3) * 4;
 
 /// The longest a handle may be configured to open for. Revocations are kept
 /// this long, so changing the configured lifetime never lets a revoked handle
@@ -63,6 +74,9 @@ pub struct Device {
     pub slot: Slot,
     /// A revoker, which only revokes, rather than a handle to push through.
     pub revoker: bool,
+    /// For a Live Activity's handle, the token hash of the device it is on;
+    /// `token` is then the activity's.
+    pub activity_of: Option<TokenHash>,
 }
 
 /// Never shows the token: a `{:?}` in a log line must not leak one.
@@ -73,6 +87,7 @@ impl std::fmt::Debug for Device {
             .field("minted_ms", &self.minted_ms)
             .field("slot", &self.slot)
             .field("revoker", &self.revoker)
+            .field("activity", &self.activity_of.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -134,14 +149,43 @@ impl Handles {
         now_ms: u64,
         revoker: bool,
     ) -> String {
+        let flags = if sandbox { SANDBOX } else { 0 } | if revoker { REVOKER } else { 0 };
+        self.seal_body(flags, now_ms, slot, None, token)
+    }
+
+    /// A handle for the Live Activity whose token is `token`, on the device
+    /// whose token hashes to `device`, for the server `slot` stands for.
+    pub fn seal_activity(
+        &self,
+        token: &[u8],
+        device: &TokenHash,
+        slot: &Slot,
+        sandbox: bool,
+        now_ms: u64,
+    ) -> String {
+        let flags = ACTIVITY | if sandbox { SANDBOX } else { 0 };
+        self.seal_body(flags, now_ms, slot, Some(device), token)
+    }
+
+    fn seal_body(
+        &self,
+        flags: u8,
+        now_ms: u64,
+        slot: &Slot,
+        device: Option<&TokenHash>,
+        token: &[u8],
+    ) -> String {
         let mut nonce = [0u8; NONCE_LEN];
         aws_lc_rs::rand::fill(&mut nonce).expect("the system's random source failed");
         let header = [VERSION, self.current];
 
-        let mut body = Vec::with_capacity(FIXED_LEN + token.len() + TAG_LEN);
-        body.push(if sandbox { SANDBOX } else { 0 } | if revoker { REVOKER } else { 0 });
+        let mut body = Vec::with_capacity(FIXED_LEN + HASH_LEN + token.len() + TAG_LEN);
+        body.push(flags);
         body.extend_from_slice(&now_ms.to_be_bytes());
         body.extend_from_slice(slot);
+        if let Some(device) = device {
+            body.extend_from_slice(device);
+        }
         body.extend_from_slice(token);
         self.keys[&self.current]
             .seal_in_place_append_tag(
@@ -179,9 +223,19 @@ impl Handles {
 
         let sandbox = plain[0] & SANDBOX != 0;
         let revoker = plain[0] & REVOKER != 0;
+        let activity = plain[0] & ACTIVITY != 0;
         let minted_ms = u64::from_be_bytes(plain[1..9].try_into().expect("eight bytes"));
         let slot: Slot = plain[9..FIXED_LEN].try_into().expect("slot length");
-        let token = plain[FIXED_LEN..].to_vec();
+        let (activity_of, token) = if activity {
+            // The relay seals neither of these, but the check costs nothing.
+            if revoker || plain.len() < FIXED_LEN + HASH_LEN + MIN_TOKEN {
+                return Err(Invalid::Malformed);
+            }
+            let (hash, token) = plain[FIXED_LEN..].split_at(HASH_LEN);
+            (Some(hash.try_into().expect("hash length")), token.to_vec())
+        } else {
+            (None, plain[FIXED_LEN..].to_vec())
+        };
         // A mint time somewhat ahead of the clock is no forgery, since only
         // the relay seals: the clock was stepped back, or the handle was
         // minted past a revocation's window. One a whole lifetime ahead says
@@ -198,6 +252,7 @@ impl Handles {
             minted_ms,
             slot,
             revoker,
+            activity_of,
         })
     }
 }
@@ -242,6 +297,23 @@ mod tests {
         assert!(device.sandbox);
         assert_eq!(device.minted_ms, 1_000);
         assert_eq!(device.slot, SLOT);
+    }
+
+    #[test]
+    fn an_activity_handle_opens_to_its_token_and_its_device() {
+        let h = handles();
+        let token = [0xcd; MAX_TOKEN];
+        let device = [0x42; 16];
+        let sealed = h.seal_activity(&token, &device, &SLOT, true, 1_000);
+        assert!(sealed.len() <= MAX_HANDLE_LEN);
+        let opened = h.open(&sealed, 2_000).unwrap();
+        assert_eq!(opened.token, token);
+        assert_eq!(opened.activity_of, Some(device));
+        assert!(opened.sandbox);
+        assert!(!opened.revoker);
+        assert_eq!(opened.slot, SLOT);
+        let plain = h.open(&h.seal(&token, &SLOT, true, 1_000, false), 2_000);
+        assert_eq!(plain.unwrap().activity_of, None);
     }
 
     #[test]
