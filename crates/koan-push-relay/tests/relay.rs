@@ -1063,7 +1063,7 @@ async fn metrics_count_outcomes_and_nothing_else() {
 }
 
 /// A Live Activity's token, which Apple's are longer than a device's.
-const ACTIVITY: &str = "80aa9f2c8e3b1d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+const ACTIVITY: &str = "80aa9f2c8e3b1d4e80aa9f2c8e3b1d4e80aa9f2c8e3b1d4e80aa9f2c8e3b1d4e80aa9f2c8e3b1d4e80aa9f2c8e3b1d4e80aa9f2c8e3b1d4e80aa9f2c8e3b1d4e80aa9f2c8e3b1d4e80aa9f2c8e3b1d4e";
 
 fn now_secs() -> f64 {
     std::time::SystemTime::now()
