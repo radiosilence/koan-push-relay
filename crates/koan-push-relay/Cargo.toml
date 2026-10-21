@@ -1,6 +1,6 @@
 [package]
 name = "koan-push-relay"
-version = "0.1.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,6 +9,7 @@ description = "Forwards koan servers' pushes to Apple's push service under a key
 publish = false
 
 [dependencies]
+koan-relay-client = { path = "../koan-relay-client", default-features = false }
 aws-lc-rs = "1"
 axum = "0.8"
 base64 = "0.23"
@@ -27,6 +28,9 @@ tower = { version = "0.5", features = ["util", "limit", "load-shed"] }
 tower-http = { version = "0.7", features = ["catch-panic", "limit", "timeout"] }
 
 [dev-dependencies]
+# The client, HTTP and all, to drive the relay in the tests. Dev-dependency
+# features stay out of the relay binary.
+koan-relay-client = { path = "../koan-relay-client" }
 # The stub gateway in the tests speaks HTTP/2 without TLS, as the client
 # always speaks HTTP/2 to Apple.
 axum = { version = "0.8", features = ["http2"] }

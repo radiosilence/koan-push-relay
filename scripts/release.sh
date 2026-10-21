@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Prepare a release PR: branch from origin/main, bump the version everywhere
-# CI compares it (the koan-push-relay crate and Cargo.lock, the Pulumi package and its
+# CI compares it (the workspace version and Cargo.lock, the Pulumi package and its
 # lockfile, and the APP_VERSION the package deploys), turn the unreleased
 # changelog fragments into the release, commit, push and open the PR. Never
 # creates or pushes a tag: merging the PR is what releases.
@@ -20,7 +20,7 @@ done
 usage() { echo "usage: scripts/release.sh X.Y.Z|patch|minor|major [--no-push]" >&2; exit 2; }
 [ -n "$version" ] || usage
 
-crate=crates/koan-push-relay/Cargo.toml
+crate=Cargo.toml
 versions=deploy/pulumi/src/versions.ts
 
 cd "$(git rev-parse --show-toplevel)"

@@ -1,8 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/koan-push-relay"]
+members = ["crates/koan-push-relay", "crates/koan-relay-client"]
 
 [workspace.package]
+# One version for the relay, the client and the Pulumi package: they are
+# released together.
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT"

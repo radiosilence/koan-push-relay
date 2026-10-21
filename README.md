@@ -4,4 +4,4 @@ The push relay at `push.koan.rocks`. Apple delivers pushes to the [kōan](https:
 
 `docs/push-relay.md` specifies the API, what the relay sees and keeps, and how to run and deploy it.
 
-It ships as a container image (`ghcr.io/radiosilence/koan-push-relay`), a static Linux binary on each GitHub release, and a Pulumi package (`@radiosilence/koan-relay-pulumi`, in `deploy/pulumi`) that deploys that image.
+It ships as a container image (`ghcr.io/radiosilence/koan-push-relay`), a static Linux binary on each GitHub release, and a Pulumi package (`@radiosilence/koan-relay-pulumi`, in `deploy/pulumi`) that deploys that image. `koan-relay-client` (`crates/koan-relay-client`) is the crate kōan's apps and servers call the relay through, published to crates.io with each release.

@@ -35,10 +35,10 @@ env:
 # how a failed release is retried. The group is chosen before any job runs, so
 # it cannot ask `changes`: a push may release when its head commit is titled
 # `release: ` (as `just release` names its pull request) or changes the
-# koan-push-relay crate's manifest, where the version lives.
+# workspace manifest, where the version lives.
 concurrency:
-  group: "ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || (startsWith(github.event.head_commit.message, 'release: ') || contains(github.event.head_commit.modified, 'crates/koan-push-relay/Cargo.toml')) && format('release-{0}', github.sha) || 'main' }}"
-  cancel-in-progress: "${{ github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'release: ') && !contains(github.event.head_commit.modified, 'crates/koan-push-relay/Cargo.toml')) }}"
+  group: "ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || (startsWith(github.event.head_commit.message, 'release: ') || contains(github.event.head_commit.modified, 'Cargo.toml')) && format('release-{0}', github.sha) || 'main' }}"
+  cancel-in-progress: "${{ github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'release: ') && !contains(github.event.head_commit.modified, 'Cargo.toml')) }}"
 
 jobs:
   # ── CI ──────────────────────────────────────────────────────────────────
@@ -111,9 +111,9 @@ jobs:
           # releases. Only a 404 means the version is not out: any other
           # error fails this job, since guessing either way releases twice or
           # never.
-          version=$(version_of < crates/koan-push-relay/Cargo.toml)
+          version=$(version_of < Cargo.toml)
           bumped=false
-          if [ "$(git show HEAD^1:crates/koan-push-relay/Cargo.toml 2>/dev/null | version_of)" != "$version" ]; then
+          if [ "$(git show HEAD^1:Cargo.toml 2>/dev/null | version_of)" != "$version" ]; then
             bumped=true
           fi
           case "$EVENT" in
@@ -192,7 +192,7 @@ jobs:
           done | sort -u | while read -r id event sha; do
             if [ "$event" = push ]; then
               files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.files[].filename') || continue
-              if grep -qx 'crates/koan-push-relay/Cargo.toml' <<< "$files"; then
+              if grep -qx 'Cargo.toml' <<< "$files"; then
                 continue
               fi
             fi
@@ -589,6 +589,38 @@ jobs:
           fi
           npm publish
 
+  # The client crate, to crates.io, where kōan's published crates can depend
+  # on it. A version there cannot be taken back, so it goes out after the
+  # checks, and one already in the index is passed over, so a retried release
+  # goes straight on.
+  publish-crate:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [changes, checks]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.changes.outputs.release == 'true' && needs.checks.result == 'success' }}
+    env:
+      VERSION: ${{ needs.changes.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        with:
+          toolchain: stable
+      # The registry token is on this step alone: rust-cache would hash it
+      # into its key.
+      - env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "::error::CARGO_REGISTRY_TOKEN is not set; the client cannot be published"
+            exit 1
+          fi
+          if curl -sf "https://index.crates.io/ko/an/koan-relay-client" | grep -q "\"vers\":\"${VERSION}\""; then
+            echo "koan-relay-client ${VERSION} is already on crates.io"
+            exit 0
+          fi
+          cargo publish --locked -p koan-relay-client
+
   # Last, so a release never names an image or a package that does not exist.
   # Creates the tag through the API, on the commit that was built; the notes
   # are the version's section of CHANGELOG.md, and the downloads are the
@@ -597,10 +629,10 @@ jobs:
     name: Create Release
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [changes, checks, linux-build, container-release, publish-chart]
+    needs: [changes, checks, linux-build, container-release, publish-chart, publish-crate]
     # Every need having run, not merely not failed: a release without one of
     # its parts is not a release.
-    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.checks.result == 'success' && needs.linux-build.result == 'success' && needs.container-release.result == 'success' && needs.publish-chart.result == 'success' && needs.changes.outputs.release == 'true' }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.checks.result == 'success' && needs.linux-build.result == 'success' && needs.container-release.result == 'success' && needs.publish-chart.result == 'success' && needs.publish-crate.result == 'success' && needs.changes.outputs.release == 'true' }}
     permissions:
       contents: write
     env:

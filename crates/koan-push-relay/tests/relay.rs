@@ -1110,6 +1110,13 @@ async fn an_activity_update_reaches_apple_on_the_activity_topic_bounded() {
     assert_eq!(aps["content-state"]["artist"], "Miles Davis");
     assert!(aps["stale-date"].as_u64().unwrap() > now_secs() as u64 + 60 * 60);
     assert!(aps.get("alert").is_none() && got.body.get("koan-e2e").is_none());
+
+    // A field the relay does not know is dropped, never sent.
+    let mut extra = state();
+    extra["alert"] = json!("hello");
+    assert_eq!(h.update(&activity, extra).await.status(), 204);
+    let got = h.gateway.received().last().cloned().unwrap();
+    assert!(got.body["aps"]["content-state"].get("alert").is_none());
 }
 
 #[tokio::test]
@@ -1129,9 +1136,6 @@ async fn activity_and_device_handles_are_not_interchangeable() {
         )
         .await;
     assert_eq!(bare.status(), 400);
-    let mut extra = state();
-    extra["alert"] = json!("hello");
-    assert_eq!(h.update(&activity, extra).await.status(), 400);
     let mut svg = state();
     svg["art"] = json!(STANDARD.encode(b"<svg onload=x></svg>"));
     assert_eq!(h.update(&activity, svg).await.status(), 400);
@@ -1205,6 +1209,61 @@ async fn activity_updates_have_an_allowance_of_their_own() {
     assert_eq!(h.update(&activity, state()).await.status(), 204);
     assert_eq!(h.update(&activity, state()).await.status(), 429);
     assert_eq!(h.push(&handle, "wake", None).await.status(), 204);
+}
+
+/// The client crate kōan's apps and servers use, against the relay itself:
+/// what one sends is what the other reads.
+#[tokio::test]
+async fn the_client_crate_speaks_the_relays_protocol() {
+    use koan_relay_client::{ActivityState, Client, Error, Push};
+    let h = Harness::start(|_| {}).await;
+    let url = h.url.clone();
+    tokio::task::spawn_blocking(move || {
+        let client = Client::new(&url).unwrap();
+        let token = hex::decode(TOKEN).unwrap();
+        let slot: [u8; 16] = hex::decode(SLOT).unwrap().try_into().unwrap();
+        let registered = client.register(&token, &slot, false).unwrap();
+        client
+            .push(
+                &registered.handle,
+                Push::Notify {
+                    blob: Some("Y2lwaGVy"),
+                },
+            )
+            .unwrap();
+        client.push(&registered.handle, Push::Wake).unwrap();
+        let activity = client
+            .register_activity(&registered.revoker, &hex::decode(ACTIVITY).unwrap(), &slot)
+            .unwrap();
+        let state = ActivityState {
+            device: "Desk".into(),
+            linked: true,
+            title: Some("Blue in Green".into()),
+            artist: None,
+            album: None,
+            playing: true,
+            position_ms: 0,
+            duration_ms: 1000,
+            at: now_secs(),
+            art: None,
+        };
+        client.update_activity(&activity.handle, &state).unwrap();
+        assert!(matches!(
+            client.push(&activity.handle, Push::Wake),
+            Err(Error::Bad(_))
+        ));
+        client.revoke(&registered.revoker).unwrap();
+        assert_eq!(
+            client.push(&registered.handle, Push::Wake),
+            Err(Error::Gone)
+        );
+        assert_eq!(
+            client.update_activity(&activity.handle, &state),
+            Err(Error::Gone)
+        );
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

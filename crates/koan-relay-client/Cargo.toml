@@ -1,0 +1,23 @@
+[package]
+name = "koan-relay-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A client for kōan's push relay: registering devices and Live Activities, and pushing to them."
+keywords = ["koan", "apns", "push"]
+categories = ["api-bindings"]
+
+[features]
+default = ["client"]
+# The blocking HTTP client. Without it, the crate is the relay's types alone,
+# which is what the relay itself uses.
+client = ["dep:hex", "dep:reqwest", "dep:serde_json", "dep:url"]
+
+[dependencies]
+hex = { version = "0.4", optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"], optional = true }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", optional = true }
+url = { version = "2", optional = true }
