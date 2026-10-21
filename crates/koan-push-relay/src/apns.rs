@@ -649,8 +649,8 @@ mod tests {
     fn one_servers_notifications_never_replace_anothers() {
         let other: Slot = [0x11; 16];
         for kind in [Kind::Summon, Kind::Notify] {
-            let a = headers(kind, Some(&SLOT)).collapse;
-            assert_ne!(a, headers(kind, Some(&other)).collapse);
+            let a = headers(kind, Some(&SLOT)).collapse.unwrap();
+            assert_ne!(Some(a.clone()), headers(kind, Some(&other)).collapse);
             assert!(a.len() <= 64, "Apple's limit on a collapse id");
         }
     }
