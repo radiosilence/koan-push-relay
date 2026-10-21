@@ -1,0 +1,16 @@
+[package]
+name = "koan-relay-client"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A client for kōan's push relay: registering devices and Live Activities, and pushing to them."
+keywords = ["koan", "apns", "push"]
+categories = ["api-bindings"]
+
+[dependencies]
+hex = "0.4"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"

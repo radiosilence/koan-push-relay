@@ -9,6 +9,7 @@ description = "Forwards koan servers' pushes to Apple's push service under a key
 publish = false
 
 [dependencies]
+koan-relay-client = { path = "../koan-relay-client" }
 aws-lc-rs = "1"
 axum = "0.8"
 base64 = "0.23"

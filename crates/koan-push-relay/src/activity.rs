@@ -9,7 +9,6 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use serde::{Deserialize, Serialize};
 
 /// The longest a device name may be, in UTF-8 bytes.
 pub const MAX_DEVICE: usize = 48;
@@ -29,58 +28,35 @@ const MAX_AHEAD_SECS: f64 = 60.0;
 /// A Live Activity nobody has updated in this long shows as stale.
 pub const STALE_SECS: u64 = 8 * 60 * 60;
 
-/// What a server sends for a Live Activity. The field names are the widget's
-/// `RemoteActivity.ContentState`.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ActivityState {
-    pub device: String,
-    pub linked: bool,
-    #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default)]
-    pub artist: Option<String>,
-    #[serde(default)]
-    pub album: Option<String>,
-    pub playing: bool,
-    pub position_ms: u64,
-    pub duration_ms: u64,
-    /// When `position_ms` was true, in Unix seconds.
-    pub at: f64,
-    /// The sleeve, a small JPEG, base64.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub art: Option<String>,
-}
+pub use koan_relay_client::ActivityState;
 
-impl ActivityState {
-    /// The state as the relay will send it, with `now` in Unix seconds; or
-    /// why it is refused.
-    pub fn bounded(self, now: f64) -> Result<Self, &'static str> {
-        let art = match self.art {
-            Some(art) if !is_jpeg(&art) => return Err("the art is not a small base64 JPEG"),
-            art => art,
-        };
-        let duration_ms = self.duration_ms.min(MAX_DURATION_MS);
-        let at = if self.at.is_finite()
-            && (now - MAX_AGE_SECS..=now + MAX_AHEAD_SECS).contains(&self.at)
-        {
-            self.at
-        } else {
-            now
-        };
-        Ok(Self {
-            device: text(&self.device, MAX_DEVICE),
-            linked: self.linked,
-            title: self.title.map(|t| text(&t, MAX_TEXT)),
-            artist: self.artist.map(|t| text(&t, MAX_TEXT)),
-            album: self.album.map(|t| text(&t, MAX_TEXT)),
-            playing: self.playing,
-            position_ms: self.position_ms.min(duration_ms),
-            duration_ms,
-            at,
-            art,
-        })
-    }
+/// `state` as the relay will send it, with `now` in Unix seconds; or why it
+/// is refused.
+pub fn bounded(state: ActivityState, now: f64) -> Result<ActivityState, &'static str> {
+    let art = match state.art {
+        Some(art) if !is_jpeg(&art) => return Err("the art is not a small base64 JPEG"),
+        art => art,
+    };
+    let duration_ms = state.duration_ms.min(MAX_DURATION_MS);
+    let at = if state.at.is_finite()
+        && (now - MAX_AGE_SECS..=now + MAX_AHEAD_SECS).contains(&state.at)
+    {
+        state.at
+    } else {
+        now
+    };
+    Ok(ActivityState {
+        device: text(&state.device, MAX_DEVICE),
+        linked: state.linked,
+        title: state.title.map(|t| text(&t, MAX_TEXT)),
+        artist: state.artist.map(|t| text(&t, MAX_TEXT)),
+        album: state.album.map(|t| text(&t, MAX_TEXT)),
+        playing: state.playing,
+        position_ms: state.position_ms.min(duration_ms),
+        duration_ms,
+        at,
+        art,
+    })
 }
 
 /// `s` with control and formatting characters gone (the ones that reorder
@@ -159,17 +135,19 @@ mod tests {
 
     #[test]
     fn a_plain_state_goes_through_as_it_is() {
-        assert_eq!(state().bounded(NOW).unwrap(), state());
+        assert_eq!(bounded(state(), NOW).unwrap(), state());
     }
 
     #[test]
     fn text_is_capped_and_stripped_of_what_could_disguise_it() {
-        let s = ActivityState {
-            title: Some(format!("a\u{202E}b\u{200B}c\n\t d{}", "x".repeat(500))),
-            device: "D\u{0007}esk".into(),
-            ..state()
-        }
-        .bounded(NOW)
+        let s = bounded(
+            ActivityState {
+                title: Some(format!("a\u{202E}b\u{200B}c\n\t d{}", "x".repeat(500))),
+                device: "D\u{0007}esk".into(),
+                ..state()
+            },
+            NOW,
+        )
         .unwrap();
         let title = s.title.unwrap();
         assert!(title.starts_with("abc d"));
@@ -185,50 +163,41 @@ mod tests {
 
     #[test]
     fn the_playhead_stays_within_the_track_and_the_relays_clock() {
-        let s = ActivityState {
+        let ahead = ActivityState {
             position_ms: u64::MAX,
             duration_ms: u64::MAX,
             at: NOW + 3600.0,
             ..state()
-        }
-        .bounded(NOW)
-        .unwrap();
+        };
+        let s = bounded(ahead, NOW).unwrap();
         assert_eq!(s.duration_ms, MAX_DURATION_MS);
         assert_eq!(s.position_ms, MAX_DURATION_MS);
         assert_eq!(s.at, NOW);
-        let s = ActivityState {
+        let nan = ActivityState {
             at: f64::NAN,
             ..state()
-        }
-        .bounded(NOW)
-        .unwrap();
-        assert_eq!(s.at, NOW);
+        };
+        assert_eq!(bounded(nan, NOW).unwrap().at, NOW);
     }
 
     #[test]
     fn art_must_be_a_small_jpeg() {
-        let jpeg = STANDARD.encode([0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0xFF, 0xD9]);
-        assert!(
-            ActivityState {
-                art: Some(jpeg),
-                ..state()
-            }
-            .bounded(NOW)
-            .is_ok()
-        );
+        let with = |art: String| {
+            bounded(
+                ActivityState {
+                    art: Some(art),
+                    ..state()
+                },
+                NOW,
+            )
+        };
+        assert!(with(STANDARD.encode([0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0xFF, 0xD9])).is_ok());
         for art in [
             STANDARD.encode(b"<svg onload=x>"),
             "not base64!".to_string(),
             STANDARD.encode([0xFF, 0xD8, 0xFF].repeat(1000)),
         ] {
-            assert!(
-                ActivityState {
-                    art: Some(art),
-                    ..state()
-                }
-                .bounded(NOW)
-                .is_err()
-            );
+            assert!(with(art).is_err());
         }
     }
 

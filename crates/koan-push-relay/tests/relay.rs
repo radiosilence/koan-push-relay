@@ -1203,3 +1203,53 @@ async fn activity_updates_have_an_allowance_of_their_own() {
     assert_eq!(h.update(&activity, state()).await.status(), 429);
     assert_eq!(h.push(&handle, "wake", None).await.status(), 204);
 }
+
+/// The client crate kōan's apps and servers use, against the relay itself:
+/// what one sends is what the other reads.
+#[tokio::test]
+async fn the_client_crate_speaks_the_relays_protocol() {
+    use koan_relay_client::{ActivityState, Client, Error, Kind};
+    let h = Harness::start(|_| {}).await;
+    let url = h.url.clone();
+    tokio::task::spawn_blocking(move || {
+        let client = Client::new(&url).unwrap();
+        let token = hex::decode(TOKEN).unwrap();
+        let slot: [u8; 16] = hex::decode(SLOT).unwrap().try_into().unwrap();
+        let registered = client.register(&token, &slot, false).unwrap();
+        client
+            .push(&registered.handle, Kind::Notify, Some("Y2lwaGVy"))
+            .unwrap();
+        client.push(&registered.handle, Kind::Wake, None).unwrap();
+        let activity = client
+            .register_activity(&registered.revoker, &hex::decode(ACTIVITY).unwrap(), &slot)
+            .unwrap();
+        let state = ActivityState {
+            device: "Desk".into(),
+            linked: true,
+            title: Some("Blue in Green".into()),
+            artist: None,
+            album: None,
+            playing: true,
+            position_ms: 0,
+            duration_ms: 1000,
+            at: now_secs(),
+            art: None,
+        };
+        client.update_activity(&activity.handle, &state).unwrap();
+        assert!(matches!(
+            client.push(&activity.handle, Kind::Wake, None),
+            Err(Error::Bad(_))
+        ));
+        client.revoke(&registered.revoker).unwrap();
+        assert_eq!(
+            client.push(&registered.handle, Kind::Wake, None),
+            Err(Error::Gone)
+        );
+        assert_eq!(
+            client.update_activity(&activity.handle, &state),
+            Err(Error::Gone)
+        );
+    })
+    .await
+    .unwrap();
+}

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/koan-push-relay"]
+members = ["crates/koan-push-relay", "crates/koan-relay-client"]
 
 [workspace.package]
 edition = "2024"

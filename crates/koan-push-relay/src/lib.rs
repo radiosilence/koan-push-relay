@@ -959,11 +959,9 @@ async fn push(
         let req: PushRequest = read(body).await?;
         let _working = relay.requests.try_acquire().map_err(|_| Refusal::Busy)?;
         let state = match (req.kind, req.state) {
-            (Kind::Activity, Some(state)) => Some(
-                state
-                    .bounded(unix_ms() as f64 / 1000.0)
-                    .map_err(Refusal::Bad)?,
-            ),
+            (Kind::Activity, Some(state)) => {
+                Some(activity::bounded(state, unix_ms() as f64 / 1000.0).map_err(Refusal::Bad)?)
+            }
             (Kind::Activity, None) => return Err(Refusal::Bad("an activity update needs a state")),
             (_, Some(_)) => return Err(Refusal::Bad("only an activity update carries a state")),
             (_, None) => None,
