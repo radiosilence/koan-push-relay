@@ -4,7 +4,7 @@
  * one number says exactly which build a pin gets. CI refuses a build where
  * `crates/koan-push-relay/Cargo.toml`, `package.json` and this disagree.
  */
-export const APP_VERSION = "0.1.0";
+export const APP_VERSION = "0.1.1";
 
 export const VERSIONS = {
   relay: `ghcr.io/radiosilence/koan-push-relay:v${APP_VERSION}`,
