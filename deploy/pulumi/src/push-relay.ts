@@ -105,6 +105,11 @@ export function createPushRelay(
             securityContext: {
               runAsUser: UID,
               runAsGroup: UID,
+              // The Secret's files, and a claim's volume, are root's unless
+              // the pod has a group the kubelet hands them to: without it the
+              // relay can read neither its key nor its store.
+              fsGroup: UID,
+              fsGroupChangePolicy: "OnRootMismatch",
               runAsNonRoot: true,
               seccompProfile: { type: "RuntimeDefault" },
             },
@@ -162,7 +167,8 @@ export function createPushRelay(
                 name: "keys",
                 secret: {
                   secretName: conf.existingSecret,
-                  defaultMode: 0o400,
+                  // Root and the pod's group may read them; nobody writes.
+                  defaultMode: 0o440,
                   items: gateways.map((g) => ({
                     key: conf.apns[g]!.secretKey ?? `apns-${g}`,
                     path: `${g}.p8`,
@@ -178,10 +184,11 @@ export function createPushRelay(
     options,
   );
 
+  const serviceName = `${conf.service.name}-service`;
   const service = new k8s.core.v1.Service(
-    conf.service.name,
+    serviceName,
     {
-      metadata: { name: conf.service.name, namespace, labels },
+      metadata: { name: serviceName, namespace, labels },
       spec: { selector: selectorLabels, ports: [{ port: 80, targetPort: "http" }] },
     },
     options,

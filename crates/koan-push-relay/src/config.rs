@@ -178,6 +178,11 @@ pub struct Limits {
     /// Live Activity updates one device's activities can be sent an hour,
     /// from every server together.
     pub device_activity_per_hour: u32,
+    /// Live Activity tokens Apple refuses as unknown an hour, for one
+    /// device's activities. Activity tokens are not proven, since a proof
+    /// would show on the lock screen, so this bounds what a device's
+    /// revoker can make the relay send Apple for made-up ones.
+    pub device_bad_activity_tokens_per_hour: u32,
     /// Pushes from one address a minute. A server with many listeners sends
     /// from one address, so this is generous.
     pub ip_pushes_per_minute: u32,
@@ -220,6 +225,7 @@ impl Default for Limits {
             device_revocations_per_hour: 10,
             handle_activity_per_hour: 120,
             device_activity_per_hour: 240,
+            device_bad_activity_tokens_per_hour: 10,
             ip_pushes_per_minute: 6000,
             ip_registrations_per_minute: 120,
             ip_revocations_per_minute: 60,
