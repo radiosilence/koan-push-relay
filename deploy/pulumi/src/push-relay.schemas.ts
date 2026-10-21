@@ -119,6 +119,7 @@ export const PushRelayConfSchema = z.strictObject({
       deviceRevocationsPerHour: Limit,
       handleActivityPerHour: Limit,
       deviceActivityPerHour: Limit,
+      deviceBadActivityTokensPerHour: Limit,
       ipPushesPerMinute: Limit,
       ipRegistrationsPerMinute: Limit,
       ipRevocationsPerMinute: Limit,
