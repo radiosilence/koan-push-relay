@@ -641,9 +641,12 @@ async fn proven_tokens_refused_across_devices_stop_the_gateway() {
     // What Apple says to every token when the relay's topic or gateway is
     // wrong.
     h.gateway.answer(400, "DeviceTokenNotForTopic");
-    for handle in &handles[..5] {
+    for handle in &handles[..4] {
         assert_eq!(h.push(handle, "wake", None).await.status(), 410);
     }
+    // The fifth stops the gateway: the relay is what is wrong, so that
+    // device is not retired, and its server is told to wait.
+    assert_eq!(h.push(&handles[4], "wake", None).await.status(), 503);
     h.gateway.accept();
     let reached = h.gateway.received().len();
     let r = h.push(&handles[5], "wake", None).await;
@@ -1202,4 +1205,75 @@ async fn activity_updates_have_an_allowance_of_their_own() {
     assert_eq!(h.update(&activity, state()).await.status(), 204);
     assert_eq!(h.update(&activity, state()).await.status(), 429);
     assert_eq!(h.push(&handle, "wake", None).await.status(), 204);
+}
+
+#[tokio::test]
+async fn an_ended_activity_reaches_apple_no_more() {
+    let h = Harness::start(|_| {}).await;
+    let (_, revoker) = h.register_with_revoker(TOKEN, SLOT).await;
+    let activity = h.register_activity(&revoker, ACTIVITY).await;
+    h.gateway.answer(410, "Unregistered");
+    assert_eq!(h.update(&activity, state()).await.status(), 410);
+    h.gateway.accept();
+    let reached = h.gateway.received().len();
+    assert_eq!(h.update(&activity, state()).await.status(), 410);
+    assert_eq!(h.gateway.received().len(), reached, "stopped at the relay");
+}
+
+#[tokio::test]
+async fn made_up_activity_tokens_are_counted_against_their_device() {
+    let h = Harness::start(|cfg| {
+        cfg.limits.device_bad_activity_tokens_per_hour = 2;
+    })
+    .await;
+    let (handle, revoker) = h.register_with_revoker(TOKEN, SLOT).await;
+    let mut activities = Vec::new();
+    for i in 0..3 {
+        activities.push(
+            h.register_activity(&revoker, &format!("{:0160x}", i + 1))
+                .await,
+        );
+    }
+    h.gateway.answer(400, "BadDeviceToken");
+    for activity in &activities[..2] {
+        assert_eq!(h.update(activity, state()).await.status(), 410);
+    }
+    let reached = h.gateway.received().len();
+    assert_eq!(h.update(&activities[2], state()).await.status(), 429);
+    assert_eq!(h.gateway.received().len(), reached, "not sent");
+    h.gateway.accept();
+    // The device itself is as it was.
+    assert_eq!(h.push(&handle, "wake", None).await.status(), 204);
+}
+
+#[tokio::test]
+async fn a_refusal_the_relay_does_not_know_at_registration_is_not_a_made_up_token() {
+    let h = Harness::start(|cfg| {
+        cfg.limits.ip_bad_tokens_per_hour = 1;
+    })
+    .await;
+    h.gateway.answer(400, "SomethingApplesAddedLater");
+    for _ in 0..3 {
+        let r = h
+            .post("/v1/register", json!({ "token": TOKEN, "slot": SLOT }))
+            .await;
+        assert_eq!(r.status(), 503);
+    }
+    h.gateway.accept();
+    // Had those counted as made-up tokens, this address could prove nothing.
+    h.register(TOKEN).await;
+}
+
+#[tokio::test]
+async fn a_key_for_the_other_environment_stops_the_gateway() {
+    let h = Harness::start(|_| {}).await;
+    let handle = h.register(TOKEN).await;
+    // Apple's spelling on the wire, which its own table gives with `Id`.
+    h.gateway.answer(403, "BadEnvironmentKeyInToken");
+    assert_eq!(h.push(&handle, "wake", None).await.status(), 503);
+    h.gateway.accept();
+    let reached = h.gateway.received().len();
+    let r = h.push(&handle, "wake", None).await;
+    assert_eq!(r.status(), 503);
+    assert_eq!(h.gateway.received().len(), reached, "held, not sent");
 }
