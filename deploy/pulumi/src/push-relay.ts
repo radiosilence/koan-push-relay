@@ -50,6 +50,7 @@ export function createPushRelay(
     { name: "KOAN_RELAY__METRICS_LISTEN", value: `0.0.0.0:${METRICS_PORT}` },
     { name: "KOAN_RELAY__CLIENT_IP_HEADER", value: conf.clientIp.header },
     { name: "KOAN_RELAY__CLIENT_IP_HOPS", value: String(conf.clientIp.hops) },
+    { name: "KOAN_RELAY__ATTESTATION__REQUIRED", value: String(conf.attestation.required) },
     { name: "KOAN_RELAY__STORE", value: `${DATA}/relay.db` },
     { name: "KOAN_RELAY__TOPIC", value: conf.topic },
     { name: "KOAN_RELAY__TOKEN_KEY", valueFrom: secret("token-key") },

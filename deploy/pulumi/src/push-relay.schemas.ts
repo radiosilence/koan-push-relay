@@ -83,6 +83,15 @@ export const PushRelayConfSchema = z.strictObject({
    * Traefik overwrites X-Real-Ip on every request from a source it does not
    * trust, so it holds the caller alone.
    */
+  /**
+   * Whether a production registration needs an App Attest assertion. Off
+   * only to test a build that cannot attest against production.
+   */
+  attestation: z
+    .strictObject({
+      required: z.boolean().default(true),
+    })
+    .prefault({}),
   clientIp: z
     .strictObject({
       header: z.string().default("x-real-ip"),
