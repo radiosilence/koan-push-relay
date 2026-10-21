@@ -2,7 +2,7 @@
 
 Apple delivers pushes to the kōan iOS app only when they are signed with a key belonging to the developer's team, so a self-hosted kōan server cannot wake a suspended iPhone or ask it to play on its own. The push relay at `push.koan.rocks` holds a topic-specific key of its own and forwards pushes for any server.
 
-The key belongs to the developer's Apple account, which answers to Apple for every push sent under it, so the relay is built to bound what anyone can cause through it. The worst a hostile server can do is make a phone show kōan's own text, within small quotas, to people who chose to sign in to it, and put words of its own, bounded, on a Live Activity one of those people started. Nobody can make the relay send Apple a flood, a stream of errors, or anything a server wrote.
+The key belongs to the developer's Apple account, which answers to Apple for every push sent under it, so the relay is built to bound what anyone can cause through it. The worst a hostile server can do is make a phone show kōan's own text, within small quotas, to people who chose to sign in to it, and put words of its own, bounded, on a Live Activity one of those people started. Nobody can make the relay send Apple a flood, a stream of errors, or anything a server wrote beyond those bounded fields.
 
 That bound holds only together with the app: its notification service extension shows nothing a server wrote, only its own template (see [What a phone shows](#what-a-phone-shows)).
 
@@ -12,9 +12,9 @@ The relay is `crates/koan-push-relay` in this repository. This page specifies it
 
 ## Parties
 
-- **The app** holds its APNs device token. It registers the token with the relay once for each server it uses, gives each server the handle it gets back, and keeps the revoker for itself. It gives the raw token to no server except one that pushes with the developer's own key (`koanApns`).
+- **The app** holds its APNs device token. It registers the token with the relay once for each server it uses, gives each server the handle it gets back, and keeps the revoker for itself. It gives its raw tokens, the device's and its Live Activities', to no server: a server that held an activity's token could register it under a revoker of its own, outside the device's revocation and quotas.
 - **A server** holds the handles its users' apps gave it, and asks the relay to push to them.
-- **The relay** opens handles, applies quotas and writes everything Apple is sent, apart from an encrypted blob a server may attach to a notification.
+- **The relay** opens handles, applies quotas and writes everything Apple is sent, apart from an encrypted blob a server may attach to a notification and the fields of a Live Activity's state, which it bounds.
 
 ## Handles
 
@@ -24,7 +24,7 @@ A handle is the device token, the gateway (production or sandbox), the time it w
 version (1) | key id (1) | nonce (12) | sealed( flags (1) | minted ms (8, big-endian) | slot (16) | token ) | tag (16)
 ```
 
-The version and key id are authenticated with the rest. A handle is opaque to everyone but the relay: clients store it and send it back unchanged, and must not parse it. It is at most 208 characters.
+The version and key id are authenticated with the rest. A handle is opaque to everyone but the relay: clients store it and send it back unchanged, and must not parse it. It is at most 228 characters.
 
 The **slot** is sixteen random bytes the app chooses for one server and keeps for it, across renewals, for as long as it uses that server. The relay counts that server's allowance for the device by it, so a renewed handle shares the old one's allowance, and stamps it on every notification it sends (`koan-from`), so the app knows which server a notification came through without taking any server's word for it.
 
@@ -46,15 +46,17 @@ The relay stores one row per revoking or gone device: a keyed hash of the token 
 
 ## Proof of a device
 
-Before minting a handle, the relay sends the token a background push (`wake-now`) and goes on only if Apple accepts it, so no handle can be had for a made-up token. The app is open when it registers, so the wake asks nothing of it.
+Before minting a device's handle, the relay sends the token a background push (`wake-now`) and goes on only if Apple accepts it, so no device handle can be had for a made-up token. The app is open when it registers, so the wake asks nothing of it.
 
-Registration is the one place a made-up token reaches Apple, so proofs have limits of their own:
+A made-up token reaches Apple in two places: a registration's proof, and an update to a Live Activity, whose token cannot be proven without showing on the lock screen. Proofs have limits of their own:
 
 - a rate for everyone;
 - a count, per caller address, of tokens Apple refused: past its limit, that address proves nothing until the count falls back;
 - the same count across everyone, past which no registration is proved until it falls back.
 
-Room in both counts is taken before a proof is sent and handed back if Apple accepts the token, so racing proofs cannot overrun them. A proof also counts against the device's wakes. Revocation asks nothing of Apple, so none of this can stop a device revoking.
+Room in both counts is taken before a proof is sent and handed back if Apple accepts the token, so racing proofs cannot overrun them. A proof also counts against the device's wakes. Revocation asks nothing of Apple, so none of this can stop a device revoking. A proof Apple refuses for a reason the relay does not know is answered `503` and counted in neither, since the token was not shown to be made up.
+
+A Live Activity's update takes the same room in everyone's count, and in a count of its device's activity tokens Apple refused, since only that device's revoker could have registered it: one installation can make the relay send Apple no more made-up tokens than that count allows.
 
 ## Endpoints
 
@@ -135,7 +137,7 @@ An `activity` goes only through an activity's handle, and only it does; it carri
 - `at`, when the position was true, is the relay's time if the server's is over an hour behind it or a minute ahead;
 - the update's `timestamp` is `at`, and its `stale-date`, when the lock screen dims it, eight hours from the relay's clock.
 
-Apple answering that an activity's token is gone means the activity has ended: the push is answered `410` and the device is left as it was.
+Apple answering that an activity's token is gone means the activity has ended: the push is answered `410`, the device is left as it was, and later updates through that handle stop at the relay. An activity token Apple does not know is treated the same way, and stays counted against its device.
 
 | Status | Meaning | What the server does |
 |--------|---------|----------------------|
@@ -171,6 +173,7 @@ Each relay process counts:
 | Device: revocations | 10 an hour |
 | Server's handle: Live Activity updates | 120 an hour |
 | Device, across its servers: Live Activity updates | 240 an hour |
+| Device: Live Activity tokens Apple refuses as unknown | 10 an hour |
 | Caller address: pushes | 6000 a minute |
 | Caller address: registrations | 120 a minute |
 | Caller address: revocations | 60 a minute |
@@ -179,13 +182,13 @@ Each relay process counts:
 | Everyone: proofs sent to Apple | 20 a second |
 | Everyone: pushes sent to Apple | 20,000 a second |
 
-A server's handle is counted by device and slot, so its renewals share it. A device is counted by its token, so its ceiling holds whichever servers hold its handles. A caller address is counted by its IPv4 address, or its IPv6 /64 for pushes and /48 for registrations, revocations and refused tokens: the larger block one site is commonly given, so a site cannot spread made-up tokens over its addresses, at the price that neighbours in a /48 share those allowances. Each count allows its whole allowance as a burst and then refills evenly over the period. A push the relay or Apple could not take is not counted against its server or device.
+A server's handle is counted by device and slot, so its renewals share it. A device is counted by its token, so its ceiling holds whichever servers hold its handles. A caller address is counted by its IPv4 address, or its IPv6 /64 for pushes and /48 for registrations, revocations and refused tokens: the larger block one site is commonly given, so a site cannot spread made-up tokens over its addresses, at the price that neighbours in a /48 share those allowances. Each count allows its whole allowance as a burst and then refills evenly over the period. A push the relay or Apple could not take is not counted against its server or device; one that reached Apple stays counted against the relay's own rates towards Apple, whatever Apple answered.
 
 Behind proxies, the address is read from the header the relay is configured to trust (`client_ip_header`), across all its lines, `client_ip_hops` addresses back from the end. A request without a readable address there is refused with `400`, rather than counted as the proxy's own address, where every such caller would share one allowance. The relay must be reachable only through the proxy that writes that header, since anyone reaching it directly can write it themselves.
 
 ## When Apple refuses the relay
 
-When Apple refuses a gateway's credential (an invalid, missing or over-refreshed signing key, a wrong key id, topic or environment, an expired signing key signed only moments ago, which means the relay's clock is wrong, or tokens proven at registration refused for five different devices on that gateway within ten minutes), every push through that gateway would be refused the same way, and sending on with a credential Apple has refused is what gets a key looked at. That gateway stops: its pushes and proofs are answered `503` with `Retry-After: 300` without reaching Apple, and one a minute is let through to learn whether it has been fixed. It opens again only when Apple answers in a way only a working credential gets; the other gateway carries on meanwhile. An answer the relay does not recognise is refused with `503` and `Retry-After: 300` but does not stop the gateway. The relay never signs a new provider token within twenty minutes of the last.
+When Apple refuses a gateway's credential (an invalid, missing or over-refreshed signing key, a wrong key id, topic or environment, an expired signing key signed only moments ago, which means the relay's clock is wrong, or tokens proven at registration refused for five different devices on that gateway within ten minutes, counted as a window rather than a rate), every push through that gateway would be refused the same way, and sending on with a credential Apple has refused is what gets a key looked at. That gateway stops: its pushes and proofs are answered `503` with `Retry-After: 300` without reaching Apple, and one a minute is let through to learn whether it has been fixed: a push to a proven device token, since an answer about any other token says nothing about the relay. A device whose token is refused once the relay has concluded that it is itself misconfigured is not retired: its server is answered `503`. It opens again only when Apple answers in a way only a working credential gets; the other gateway carries on meanwhile. An answer the relay does not recognise is refused with `503` and `Retry-After: 300` but does not stop the gateway. The relay never signs a new provider token within twenty minutes of the last.
 
 ## What the relay sees and keeps
 
@@ -252,6 +255,7 @@ device_wakes_per_hour = 30
 device_revocations_per_hour = 10
 handle_activity_per_hour = 120
 device_activity_per_hour = 240
+device_bad_activity_tokens_per_hour = 10
 ip_pushes_per_minute = 6000
 ip_registrations_per_minute = 120
 ip_revocations_per_minute = 60

@@ -25,6 +25,10 @@ pub const MAX_ART: usize = 2600;
 const MAX_AGE_SECS: f64 = 60.0 * 60.0;
 /// How far ahead: a server's clock a little fast is not refused.
 const MAX_AHEAD_SECS: f64 = 60.0;
+/// The longest the state may be as JSON: Apple's 4 KB for the payload, less
+/// the envelope around it. Escaping can double a string's bytes, so the caps
+/// above do not bound this on their own.
+const MAX_STATE_JSON: usize = 3900;
 /// A Live Activity nobody has updated in this long shows as stale.
 pub const STALE_SECS: u64 = 8 * 60 * 60;
 
@@ -45,7 +49,7 @@ pub fn bounded(state: ActivityState, now: f64) -> Result<ActivityState, &'static
     } else {
         now
     };
-    Ok(ActivityState {
+    let bounded = ActivityState {
         device: text(&state.device, MAX_DEVICE),
         linked: state.linked,
         title: state.title.map(|t| text(&t, MAX_TEXT)),
@@ -56,7 +60,11 @@ pub fn bounded(state: ActivityState, now: f64) -> Result<ActivityState, &'static
         duration_ms,
         at,
         art,
-    })
+    };
+    match serde_json::to_vec(&bounded) {
+        Ok(json) if json.len() <= MAX_STATE_JSON => Ok(bounded),
+        _ => Err("the state is too large for Apple"),
+    }
 }
 
 /// `s` with control and formatting characters gone (the ones that reorder
@@ -85,19 +93,34 @@ fn text(s: &str, max: usize) -> String {
     out
 }
 
-/// Unicode's format characters that change how text reads rather than what
-/// it says: bidirectional controls, zero-width characters, and the like.
+/// Unicode's format characters (general category Cf): they change how text
+/// reads rather than what it says, and some reorder or hide it. Kept are the
+/// zero-width joiner and non-joiner, which only join: emoji sequences and
+/// Persian, Sinhala or Indic titles need them.
 fn is_format(c: char) -> bool {
     matches!(c,
         '\u{00AD}'
+        | '\u{0600}'..='\u{0605}'
         | '\u{061C}'
+        | '\u{06DD}'
+        | '\u{070F}'
+        | '\u{0890}'..='\u{0891}'
+        | '\u{08E2}'
         | '\u{180E}'
-        | '\u{200B}'..='\u{200F}'
+        | '\u{200B}'
+        | '\u{200E}'..='\u{200F}'
         | '\u{202A}'..='\u{202E}'
-        | '\u{2060}'..='\u{206F}'
+        | '\u{2060}'..='\u{2064}'
+        | '\u{2066}'..='\u{206F}'
         | '\u{FEFF}'
         | '\u{FFF9}'..='\u{FFFB}'
-        | '\u{E0000}'..='\u{E007F}')
+        | '\u{110BD}'
+        | '\u{110CD}'
+        | '\u{13430}'..='\u{1343F}'
+        | '\u{1BCA0}'..='\u{1BCA3}'
+        | '\u{1D173}'..='\u{1D17A}'
+        | '\u{E0001}'
+        | '\u{E0020}'..='\u{E007F}')
 }
 
 /// Whether `art` is base64 of no more than `MAX_ART` characters holding a
@@ -153,6 +176,49 @@ mod tests {
         assert!(title.starts_with("abc d"));
         assert_eq!(title.len(), MAX_TEXT);
         assert_eq!(s.device, "Desk");
+    }
+
+    #[test]
+    fn joiners_stay_and_other_format_characters_go() {
+        let flag = "\u{1F3F3}\u{FE0F}\u{200D}\u{1F308}";
+        assert_eq!(text(flag, 64), flag);
+        assert_eq!(text("m\u{200C}i", 64), "m\u{200C}i");
+        assert_eq!(text("a\u{0600}b\u{1D173}c\u{E0041}d", 64), "abcd");
+    }
+
+    #[test]
+    fn a_state_that_escapes_past_apples_limit_is_refused() {
+        // Quotes and backslashes are two bytes each once escaped.
+        let worst = ActivityState {
+            device: "\"".repeat(MAX_DEVICE),
+            title: Some("\\".repeat(MAX_TEXT)),
+            artist: Some("\"".repeat(MAX_TEXT)),
+            album: Some("\\".repeat(MAX_TEXT)),
+            art: Some(STANDARD.encode(jpeg(1940))),
+            ..state()
+        };
+        assert!(bounded(worst, NOW).is_err());
+        // And whatever is accepted fits, as the whole payload.
+        let fits = ActivityState {
+            title: Some("\\".repeat(MAX_TEXT)),
+            art: Some(STANDARD.encode(jpeg(1940))),
+            ..state()
+        };
+        let state = bounded(fits, NOW).unwrap();
+        let payload = crate::apns::payload(
+            crate::apns::Kind::Activity,
+            None,
+            &crate::apns::Content::Activity(state),
+            NOW as u64,
+        );
+        assert!(serde_json::to_vec(&payload).unwrap().len() <= 4096);
+    }
+
+    fn jpeg(len: usize) -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0xD8, 0xFF];
+        bytes.resize(len - 2, 0);
+        bytes.extend_from_slice(&[0xFF, 0xD9]);
+        bytes
     }
 
     #[test]

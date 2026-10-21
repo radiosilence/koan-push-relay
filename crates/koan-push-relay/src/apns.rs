@@ -103,9 +103,16 @@ struct Breaker {
 }
 
 impl Breaker {
-    fn allows(&self, now: u64) -> bool {
+    /// Whether a push may go now. While open, one a minute may, and only one
+    /// that can show the credential works (`may_probe`): an answer about a
+    /// token nobody has proven says nothing about the relay, so such a push
+    /// could hold the gateway shut by taking the probe.
+    fn allows(&self, now: u64, may_probe: bool) -> bool {
         if !self.open.load(Ordering::Acquire) {
             return true;
+        }
+        if !may_probe {
+            return false;
         }
         let next = self.next_probe.load(Ordering::Relaxed);
         now >= next
@@ -234,6 +241,9 @@ pub struct Target<'a> {
     /// The server the push came through, for a push through a handle; none
     /// for the relay's own proof of a token.
     pub slot: Option<&'a Slot>,
+    /// Whether this push may be a held gateway's probe: only one to a device
+    /// token Apple has accepted.
+    pub may_probe: bool,
 }
 
 pub struct Apns {
@@ -307,7 +317,7 @@ impl Apns {
         let Some(gateway) = self.gateway(to.sandbox) else {
             return Delivery::Unserved;
         };
-        if !gateway.breaker.allows(self.clock.now()) {
+        if !gateway.breaker.allows(self.clock.now(), to.may_probe) {
             return Delivery::Held;
         }
         let bearer = match gateway.bearer() {
@@ -376,22 +386,20 @@ impl Apns {
                 }
                 // Answers about the relay's own credential, topic or
                 // environment: every push through the gateway would get them.
+                // Apple's table spells one `BadEnvironmentKeyIdInToken`; what
+                // it sends is `BadEnvironmentKeyInToken`. Both are matched.
                 (
                     403,
                     "InvalidProviderToken"
                     | "MissingProviderToken"
                     | "Forbidden"
+                    | "BadEnvironmentKeyInToken"
                     | "BadEnvironmentKeyIdInToken"
-                    | "UnrelatedKeyIdInToken",
-                )
-                | (
-                    400,
-                    "BadTopic"
-                    | "TopicDisallowed"
-                    | "MissingTopic"
+                    | "UnrelatedKeyIdInToken"
                     | "BadCertificate"
                     | "BadCertificateEnvironment",
                 )
+                | (400, "BadTopic" | "TopicDisallowed" | "MissingTopic")
                 | (429, "TooManyProviderTokenUpdates") => {
                     Delivery::Rejected(format!("{status} {reason}"))
                 }
@@ -639,18 +647,19 @@ mod tests {
     #[test]
     fn a_held_breaker_lets_one_probe_through_a_minute_until_closed() {
         let b = Breaker::default();
-        assert!(b.allows(0));
+        assert!(b.allows(0, true));
         b.trip(0);
         let minute = PROBE_EVERY.as_nanos() as u64;
-        assert!(!b.allows(1));
-        assert!(b.allows(minute), "the minute's probe");
-        assert!(!b.allows(minute), "and only one");
+        assert!(!b.allows(1, true));
+        assert!(!b.allows(minute, false), "an unproven token takes no probe");
+        assert!(b.allows(minute, true), "the minute's probe");
+        assert!(!b.allows(minute, true), "and only one");
         // No timer closes it: a minute on there is another single probe, and
         // only a working answer lets everything through again.
-        assert!(!b.allows(2 * minute - 1));
-        assert!(b.allows(2 * minute));
-        assert!(!b.allows(2 * minute));
+        assert!(!b.allows(2 * minute - 1, true));
+        assert!(b.allows(2 * minute, true));
+        assert!(!b.allows(2 * minute, true));
         b.close();
-        assert!(b.allows(2 * minute));
+        assert!(b.allows(2 * minute, false));
     }
 }

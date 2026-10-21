@@ -33,6 +33,7 @@ export const PushRelayConfSchema = z.strictObject({
     .prefault({}),
   service: z
     .strictObject({
+      /** The route's prefix; the Service is `<name>-service`. */
       name: z.string().default("koan-push-relay"),
     })
     .prefault({}),
@@ -118,6 +119,7 @@ export const PushRelayConfSchema = z.strictObject({
       deviceRevocationsPerHour: Limit,
       handleActivityPerHour: Limit,
       deviceActivityPerHour: Limit,
+      deviceBadActivityTokensPerHour: Limit,
       ipPushesPerMinute: Limit,
       ipRegistrationsPerMinute: Limit,
       ipRevocationsPerMinute: Limit,

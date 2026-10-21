@@ -29,8 +29,8 @@ export const Quantity = z
 /**
  * A hostname the deployment should publish, and the workload answering it.
  *
- * `service` is the Service's own name, so a route names the pair rather than
- * either half.
+ * `service` is a prefix: the Service is `<service>-service`, the convention
+ * the deployers of these packages route by.
  */
 export type Route = {
   service: string;
