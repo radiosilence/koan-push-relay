@@ -104,6 +104,20 @@ impl std::fmt::Debug for RegisteredActivity {
     }
 }
 
+/// What an App Attest assertion for a registration signs: the relay's
+/// challenge, the device token, the slot and the gateway, so the assertion
+/// registers exactly these. The app hashes it (SHA-256) and passes the hash
+/// to `DCAppAttestService.generateAssertion`.
+pub fn client_data(challenge: &str, token: &[u8], slot: &Slot, sandbox: bool) -> Vec<u8> {
+    let mut data = b"koan-relay register 1\0".to_vec();
+    data.extend_from_slice(challenge.as_bytes());
+    data.push(0);
+    data.extend_from_slice(token);
+    data.extend_from_slice(slot);
+    data.push(u8::from(sandbox));
+    data
+}
+
 /// Whether `blob` is something a notification may carry: base64url without
 /// padding, of at most `MAX_BLOB` characters.
 pub fn is_blob(blob: &str) -> bool {
