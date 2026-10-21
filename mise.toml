@@ -1,0 +1,6 @@
+[tools]
+# rustfmt and clippy are not in the minimal profile.
+rust = { version = "1", components = "rustfmt,clippy" }
+just = "latest"
+lefthook = "latest"
+node = "24"
