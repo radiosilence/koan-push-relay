@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+### Added
+
+- **`koan-relay-client`.** The crate kōan's apps and servers call the relay through: registering devices and Live Activities, revoking, pushes and activity updates, with the relay's answers as errors to act on. It shares the relay's types and version, and is reached over https only. A Live Activity's absent fields are now left out of what Apple is sent, and a field the relay does not know is dropped rather than refused.
+
 ## 0.1.1
 
 ### Fixed

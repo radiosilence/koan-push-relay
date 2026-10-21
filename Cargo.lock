@@ -942,7 +942,7 @@ dependencies = [
 
 [[package]]
 name = "koan-push-relay"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aws-lc-rs",
  "axum",
@@ -966,7 +966,7 @@ dependencies = [
 
 [[package]]
 name = "koan-relay-client"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "hex",
  "reqwest",
