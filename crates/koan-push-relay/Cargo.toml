@@ -28,6 +28,9 @@ tower = { version = "0.5", features = ["util", "limit", "load-shed"] }
 tower-http = { version = "0.7", features = ["catch-panic", "limit", "timeout"] }
 
 [dev-dependencies]
+# The client, HTTP and all, to drive the relay in the tests. Dev-dependency
+# features stay out of the relay binary.
+koan-relay-client = { path = "../koan-relay-client" }
 # The stub gateway in the tests speaks HTTP/2 without TLS, as the client
 # always speaks HTTP/2 to Apple.
 axum = { version = "0.8", features = ["http2"] }

@@ -966,12 +966,13 @@ dependencies = [
 
 [[package]]
 name = "koan-relay-client"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "hex",
  "reqwest",
  "serde",
  "serde_json",
+ "url",
 ]
 
 [[package]]
