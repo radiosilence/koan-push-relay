@@ -1083,6 +1083,7 @@ dependencies = [
 name = "koan-relay-client"
 version = "0.1.1"
 dependencies = [
+ "base64 0.23.1",
  "hex",
  "reqwest",
  "serde",
@@ -1501,8 +1502,8 @@ version = "0.14.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8774e05a7d0de114588e6a28fe7e71694b82614ed569d86d8b389dfbc98b8ad8"
 dependencies = [
+ "aws-lc-rs",
  "pem 4.0.0",
- "ring",
  "rustls-pki-types",
  "time",
  "x509-parser",
@@ -2586,12 +2587,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d43b0f71ce057da06bc0851b23ee24f3f86190b07203dd8f567d0b706a185202"
 dependencies = [
  "asn1-rs",
+ "aws-lc-rs",
  "data-encoding",
  "der-parser",
  "lazy_static",
  "nom",
  "oid-registry",
- "ring",
  "rusticata-macros",
  "thiserror",
  "time",

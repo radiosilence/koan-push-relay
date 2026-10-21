@@ -17,6 +17,9 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
+#[path = "support/apple.rs"]
+mod apple;
+
 const TOKEN: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
 /// The slot the app gave the server a test pushes from.
 const SLOT: &str = "00112233445566778899aabbccddeeff";
@@ -125,6 +128,9 @@ impl Harness {
         });
         cfg.apns.production_url = format!("http://{gw_addr}");
         cfg.apns.connections = 2;
+        // Most tests register on the production gateway without App Attest;
+        // the attestation tests turn it on.
+        cfg.attestation.required = false;
         tune(&mut cfg);
 
         let relay = Relay::new(&cfg).unwrap();
@@ -1335,4 +1341,150 @@ async fn a_key_for_the_other_environment_stops_the_gateway() {
     let r = h.push(&handle, "wake", None).await;
     assert_eq!(r.status(), 503);
     assert_eq!(h.gateway.received().len(), reached, "held, not sent");
+}
+
+mod attestation {
+    use super::apple::{APP_ID, DEVELOPMENT, FakeApple, PRODUCTION};
+    use super::*;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    async fn harness(apple: &FakeApple) -> Harness {
+        let root = apple.root_pem.clone();
+        let h = Harness::start(move |cfg| {
+            cfg.attestation.required = true;
+            cfg.attestation.root = Some(root);
+        })
+        .await;
+        assert_eq!(format!("{}.{}", "TEAM123456", "cc.blit.koan"), APP_ID);
+        h
+    }
+
+    async fn challenge(h: &Harness) -> String {
+        let r = h.post("/v1/challenge", json!({})).await;
+        assert_eq!(r.status(), 200);
+        r.json::<Value>().await.unwrap()["challenge"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// The relay's sealed form of the device's key, attested in `aaguid`'s
+    /// environment.
+    async fn attest(h: &Harness, apple: &FakeApple, aaguid: &[u8; 16]) -> String {
+        let c = challenge(h).await;
+        let auth = apple.auth_data(APP_ID, 0, aaguid);
+        let r = h
+            .post(
+                "/v1/attest",
+                json!({
+                    "key_id": URL_SAFE_NO_PAD.encode(apple.key_id()),
+                    "attestation": URL_SAFE_NO_PAD.encode(apple.attestation(&auth, c.as_bytes())),
+                    "challenge": c,
+                }),
+            )
+            .await;
+        assert_eq!(r.status(), 200);
+        r.json::<Value>().await.unwrap()["key"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    async fn register(
+        h: &Harness,
+        apple: &FakeApple,
+        key: &str,
+        token: &str,
+        sandbox: bool,
+        signs_for: &str,
+    ) -> reqwest::Response {
+        let c = challenge(h).await;
+        let slot: [u8; 16] = hex::decode(SLOT).unwrap().try_into().unwrap();
+        let data =
+            koan_relay_client::client_data(&c, &hex::decode(signs_for).unwrap(), &slot, sandbox);
+        h.post(
+            "/v1/register",
+            json!({
+                "token": token,
+                "slot": SLOT,
+                "sandbox": sandbox,
+                "attest": {
+                    "key": key,
+                    "challenge": c,
+                    "assertion": URL_SAFE_NO_PAD.encode(apple.assertion(APP_ID, &data)),
+                },
+            }),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn production_registration_needs_an_assertion_and_nothing_reaches_apple_without_one() {
+        let apple = FakeApple::new();
+        let h = harness(&apple).await;
+        let r = h
+            .post("/v1/register", json!({ "token": TOKEN, "slot": SLOT }))
+            .await;
+        assert_eq!(r.status(), 400);
+        assert!(h.gateway.received().is_empty(), "no proof was sent");
+    }
+
+    #[tokio::test]
+    async fn an_attested_app_registers_on_production() {
+        let apple = FakeApple::new();
+        let h = harness(&apple).await;
+        let key = attest(&h, &apple, PRODUCTION).await;
+        let r = register(&h, &apple, &key, TOKEN, false, TOKEN).await;
+        assert_eq!(r.status(), 200);
+        let handle = r.json::<Value>().await.unwrap()["handle"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(h.push(&handle, "wake", None).await.status(), 204);
+        // The key is not a handle.
+        assert_eq!(h.push(&key, "wake", None).await.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn an_assertion_registers_only_what_it_signed() {
+        let apple = FakeApple::new();
+        let h = harness(&apple).await;
+        let key = attest(&h, &apple, PRODUCTION).await;
+        let other = "ff".repeat(32);
+        let r = register(&h, &apple, &key, TOKEN, false, &other).await;
+        assert_eq!(r.status(), 400);
+        assert!(h.gateway.received().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_development_key_registers_only_on_sandbox() {
+        let apple = FakeApple::new();
+        let h = harness(&apple).await;
+        let key = attest(&h, &apple, DEVELOPMENT).await;
+        assert_eq!(
+            register(&h, &apple, &key, TOKEN, false, TOKEN)
+                .await
+                .status(),
+            400
+        );
+    }
+
+    #[tokio::test]
+    async fn another_apps_key_is_not_attested() {
+        let apple = FakeApple::new();
+        let h = harness(&apple).await;
+        let c = challenge(&h).await;
+        let auth = apple.auth_data("TEAM123456.someone.else", 0, PRODUCTION);
+        let r = h
+            .post(
+                "/v1/attest",
+                json!({
+                    "key_id": URL_SAFE_NO_PAD.encode(apple.key_id()),
+                    "attestation": URL_SAFE_NO_PAD.encode(apple.attestation(&auth, c.as_bytes())),
+                    "challenge": c,
+                }),
+            )
+            .await;
+        assert_eq!(r.status(), 400);
+    }
 }
