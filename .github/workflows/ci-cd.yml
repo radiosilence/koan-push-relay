@@ -637,22 +637,3 @@ jobs:
           body_path: notes.md
           files: artifacts/**/*.tar.gz
 
-  # The deployment follows releases; asking its updater to run now means a
-  # release reaches push.koan.rocks without waiting for the daily check.
-  # DEPLOYMENT_PAT needs `actions: write` on radiosilence/jaritanet: it
-  # triggers the updater, it does not commit.
-  deploy:
-    name: Ask the deployment to update
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: [create-release]
-    if: ${{ !cancelled() && needs.create-release.result == 'success' }}
-    steps:
-      - env:
-          GH_TOKEN: ${{ secrets.DEPLOYMENT_PAT }}
-        run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::notice::DEPLOYMENT_PAT isn't set, so the deployment wasn't asked to update"
-            exit 0
-          fi
-          gh workflow run update-apps.yml --repo radiosilence/jaritanet
