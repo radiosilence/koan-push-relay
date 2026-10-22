@@ -79,11 +79,6 @@ export const PushRelayConfSchema = z.strictObject({
     })
     .prefault({}),
   /**
-   * Where the caller's address is read, written by the proxy in front.
-   * Traefik overwrites X-Real-Ip on every request from a source it does not
-   * trust, so it holds the caller alone.
-   */
-  /**
    * Whether a production registration needs an App Attest assertion. Off
    * only to test a build that cannot attest against production.
    */
@@ -92,6 +87,11 @@ export const PushRelayConfSchema = z.strictObject({
       required: z.boolean().default(true),
     })
     .prefault({}),
+  /**
+   * Where the caller's address is read, written by the proxy in front.
+   * Traefik overwrites X-Real-Ip on every request from a source it does not
+   * trust, so it holds the caller alone.
+   */
   clientIp: z
     .strictObject({
       header: z.string().default("x-real-ip"),
@@ -129,6 +129,8 @@ export const PushRelayConfSchema = z.strictObject({
       handleActivityPerHour: Limit,
       deviceActivityPerHour: Limit,
       deviceBadActivityTokensPerHour: Limit,
+      ipAttestationsPerMinute: Limit,
+      attestedKeyRegistrationsPerHour: Limit,
       ipPushesPerMinute: Limit,
       ipRegistrationsPerMinute: Limit,
       ipRevocationsPerMinute: Limit,

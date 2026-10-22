@@ -60,7 +60,7 @@ A Live Activity's update takes the same room in everyone's count, and in a count
 
 ## App Attest
 
-The app makes a key in the Secure Enclave (`DCAppAttestService.generateKey`), asks the relay for a challenge, has Apple attest the key over the challenge (`attestKey`, with the SHA-256 of the challenge's bytes), and sends the attestation to `/v1/attest`. The relay checks it as Apple describes: the certificate chain to Apple's App Attestation root, the nonce in the credential certificate against the authenticator data and the challenge, the key's id, the app id (team id and bundle id) in the relying party hash, a counter of zero, and the environment, production or development. It answers with the key sealed as handles are, which the app keeps until it expires and then attests a new key.
+The app makes a key in the Secure Enclave (`DCAppAttestService.generateKey`), asks the relay for a challenge, has Apple attest the key over the challenge (`attestKey`, with the SHA-256 of the challenge string exactly as the relay sent it, its UTF-8 bytes, not decoded), and sends the attestation to `/v1/attest`. The relay checks it as Apple describes: the certificate chain to Apple's App Attestation root, the nonce in the credential certificate against the authenticator data and the challenge, the key's id, the app id (team id and bundle id) in the relying party hash, a counter of zero, and the environment, production or development. It answers with the key sealed as handles are, which the app keeps until it expires and then attests a new key.
 
 Each registration then carries an assertion (`generateAssertion`) over the SHA-256 of this, for a fresh challenge:
 
@@ -202,6 +202,8 @@ Each relay process counts:
 | Server's handle: Live Activity updates | 120 an hour |
 | Device, across its servers: Live Activity updates | 240 an hour |
 | Device: Live Activity tokens Apple refuses as unknown | 10 an hour |
+| Attested key: registrations | 30 an hour |
+| Caller address: challenges and attestations | 120 a minute |
 | Caller address: pushes | 6000 a minute |
 | Caller address: registrations | 120 a minute |
 | Caller address: revocations | 60 a minute |
@@ -275,6 +277,13 @@ key_path = "/secrets/production.p8"
 key_id = "…"
 key_path = "/secrets/sandbox.p8"
 
+[attestation]
+# Whether a production registration needs an App Attest assertion.
+required = true
+# A root to check App Attest certificates against in place of Apple's, PEM.
+# For tests only: whoever holds its key can attest anything.
+# root = "-----BEGIN CERTIFICATE-----..."
+
 [limits]
 handle_alerts_per_hour = 6
 handle_wakes_per_hour = 12
@@ -284,6 +293,8 @@ device_revocations_per_hour = 10
 handle_activity_per_hour = 120
 device_activity_per_hour = 240
 device_bad_activity_tokens_per_hour = 10
+ip_attestations_per_minute = 120
+attested_key_registrations_per_hour = 30
 ip_pushes_per_minute = 6000
 ip_registrations_per_minute = 120
 ip_revocations_per_minute = 60

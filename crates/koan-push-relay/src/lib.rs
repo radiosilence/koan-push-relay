@@ -63,6 +63,9 @@ use koan_relay_client::{Registered, RegisteredActivity, is_blob};
 
 /// The largest request body: a push is a handle, a kind and a blob.
 const MAX_BODY: usize = 8 * 1024;
+/// The largest attestation request: Apple's attestation carries its
+/// receipt, several kilobytes before base64.
+const MAX_ATTEST_BODY: usize = 24 * 1024;
 
 /// How long a body may take to arrive. Short: every caller sends a few
 /// hundred bytes, and a body held back holds a connection.
@@ -119,6 +122,9 @@ pub struct Relay {
     device_activity: Keyed<TokenHash>,
     ip_pushes: Keyed<u128>,
     ip_registrations: Keyed<u128>,
+    ip_attestations: Keyed<u128>,
+    /// Registrations by one attested key, by its hash.
+    key_registrations: Keyed<TokenHash>,
     ip_revocations: Keyed<u128>,
     ip_bad_tokens: Keyed<u128>,
     global: Global,
@@ -178,6 +184,11 @@ impl Relay {
             ),
             ("ip_pushes_per_minute", l.ip_pushes_per_minute),
             ("ip_registrations_per_minute", l.ip_registrations_per_minute),
+            ("ip_attestations_per_minute", l.ip_attestations_per_minute),
+            (
+                "attested_key_registrations_per_hour",
+                l.attested_key_registrations_per_hour,
+            ),
             ("ip_revocations_per_minute", l.ip_revocations_per_minute),
             ("ip_bad_tokens_per_hour", l.ip_bad_tokens_per_hour),
             ("bad_tokens_per_hour", l.bad_tokens_per_hour),
@@ -200,11 +211,17 @@ impl Relay {
             return Err("client_ip_hops must be at least 1".into());
         }
         let handles = Handles::new(&keys, cfg.handles.current, lifetime_ms)?;
-        let hasher = TokenHasher::new(&secret("token_key", &cfg.token_key)?);
+        let token_key = secret("token_key", &cfg.token_key)?;
+        let hasher = TokenHasher::new(&token_key);
+        if cfg.attestation.root.is_some() {
+            log::warn!(
+                "App Attest certificates are checked against a configured root, not Apple's"
+            );
+        }
         let attestor = attest::Attestor::new(
             &format!("{}.{}", cfg.apns.team_id, cfg.topic),
             cfg.attestation.root.as_deref(),
-            &secret("token_key", &cfg.token_key)?,
+            &token_key,
         )?;
         let revocations =
             Revocations::open(&cfg.store, l.max_revocations, unix_ms(), MAX_LIFETIME_MS)?;
@@ -234,6 +251,14 @@ impl Relay {
             handle_activity: Keyed::new(Rate::per(l.handle_activity_per_hour, HOUR), l.max_tracked),
             device_activity: Keyed::new(Rate::per(l.device_activity_per_hour, HOUR), l.max_tracked),
             ip_pushes: Keyed::new(Rate::per(l.ip_pushes_per_minute, MINUTE), l.max_tracked),
+            ip_attestations: Keyed::new(
+                Rate::per(l.ip_attestations_per_minute, MINUTE),
+                l.max_tracked,
+            ),
+            key_registrations: Keyed::new(
+                Rate::per(l.attested_key_registrations_per_hour, HOUR),
+                l.max_tracked,
+            ),
             ip_registrations: Keyed::new(
                 Rate::per(l.ip_registrations_per_minute, MINUTE),
                 l.max_tracked,
@@ -324,6 +349,8 @@ impl Relay {
         self.device_activity.sweep(now);
         self.ip_pushes.sweep(now);
         self.ip_registrations.sweep(now);
+        self.ip_attestations.sweep(now);
+        self.key_registrations.sweep(now);
         self.ip_revocations.sweep(now);
         self.ip_bad_tokens.sweep(now);
     }
@@ -699,7 +726,9 @@ pub fn router(relay: Arc<Relay>) -> Router {
         // Innermost so it is inside the timeout: a panic becomes a 500
         // rather than a dropped connection.
         .layer(tower_http::catch_panic::CatchPanicLayer::new())
-        .layer(tower_http::limit::RequestBodyLimitLayer::new(MAX_BODY))
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(
+            MAX_ATTEST_BODY,
+        ))
         .layer(tower_http::timeout::TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             REQUEST_TIMEOUT,
@@ -902,6 +931,10 @@ struct PushRequest {
 impl Relay {
     /// Whether `a` is an assertion, by a key the relay attested, over this
     /// registration, made for a challenge still in its life.
+    ///
+    /// Each attested key has an allowance of its own, counted once its
+    /// assertion verifies: one device, however many addresses it calls from,
+    /// can register only so many tokens.
     fn check_assertion(
         &self,
         a: &Assertion,
@@ -931,7 +964,10 @@ impl Relay {
         let client_data = koan_relay_client::client_data(&a.challenge, token, slot, sandbox);
         self.attestor
             .assert(&key.token, &assertion, &client_data)
-            .map_err(Refusal::Bad)
+            .map_err(Refusal::Bad)?;
+        self.key_registrations
+            .check(self.hasher.hash(&key.token), self.clock.now())
+            .map_err(limited)
     }
 }
 
@@ -945,7 +981,7 @@ async fn challenge(
         json_only(&headers)?;
         let caller = relay.caller(&headers, peer, PROOF_PREFIX)?;
         relay
-            .ip_registrations
+            .ip_attestations
             .check(caller, relay.clock.now())
             .map_err(limited)?;
         let _: EmptyRequest = read(body).await?;
@@ -970,10 +1006,10 @@ async fn attest_key(
         json_only(&headers)?;
         let caller = relay.caller(&headers, peer, PROOF_PREFIX)?;
         relay
-            .ip_registrations
+            .ip_attestations
             .check(caller, relay.clock.now())
             .map_err(limited)?;
-        let req: AttestRequest = read(body).await?;
+        let req: AttestRequest = read_up_to(body, MAX_ATTEST_BODY).await?;
         let _working = relay.requests.try_acquire().map_err(|_| Refusal::Busy)?;
         relay
             .attestor
@@ -986,15 +1022,19 @@ async fn attest_key(
             .decode(&req.attestation)
             .map_err(|_| Refusal::Bad("the attestation is not base64url"))?;
         let now = unix_ms();
-        let key = relay
-            .attestor
-            .attest(
+        let checker = relay.clone();
+        let challenge = req.challenge.clone();
+        let key = tokio::task::spawn_blocking(move || {
+            checker.attestor.attest(
                 &key_id,
                 &attestation,
-                req.challenge.as_bytes(),
+                challenge.as_bytes(),
                 (now / 1000) as i64,
             )
-            .map_err(Refusal::Bad)?;
+        })
+        .await
+        .map_err(|_| Refusal::Busy)?
+        .map_err(Refusal::Bad)?;
         Ok(Json(json!({
             "key": relay.handles.seal_attested(&key.public_key, key.production, now),
             "production": key.production,
@@ -1025,8 +1065,17 @@ async fn register(
         let slot = slot(&req.slot)?;
         // Before anything reaches Apple: a production registration comes from
         // kōan's app on a real device, or does not happen.
-        match &req.attest {
-            Some(a) => relay.check_assertion(a, &token, &slot, req.sandbox)?,
+        match req.attest {
+            // Signature checks are not work for the runtime's threads.
+            Some(a) => {
+                let checker = relay.clone();
+                let (token, sandbox) = (token.clone(), req.sandbox);
+                tokio::task::spawn_blocking(move || {
+                    checker.check_assertion(&a, &token, &slot, sandbox)
+                })
+                .await
+                .map_err(|_| Refusal::Busy)??;
+            }
             None if !req.sandbox && relay.require_attestation => {
                 return Err(Refusal::Bad("an App Attest assertion is required"));
             }
@@ -1379,7 +1428,15 @@ fn json_only(headers: &HeaderMap) -> Result<(), Refusal> {
 
 /// The body, within `BODY_TIMEOUT` and `MAX_BODY`, as `T`.
 async fn read<T: serde::de::DeserializeOwned>(body: Body) -> Result<T, Refusal> {
-    let bytes = tokio::time::timeout(BODY_TIMEOUT, axum::body::to_bytes(body, MAX_BODY))
+    read_up_to(body, MAX_BODY).await
+}
+
+/// The body, within `BODY_TIMEOUT` and `limit` bytes, as `T`.
+async fn read_up_to<T: serde::de::DeserializeOwned>(
+    body: Body,
+    limit: usize,
+) -> Result<T, Refusal> {
+    let bytes = tokio::time::timeout(BODY_TIMEOUT, axum::body::to_bytes(body, limit))
         .await
         .map_err(|_| Refusal::Body(StatusCode::REQUEST_TIMEOUT))?
         .map_err(|_| Refusal::Body(StatusCode::PAYLOAD_TOO_LARGE))?;

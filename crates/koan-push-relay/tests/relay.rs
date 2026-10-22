@@ -1470,6 +1470,28 @@ mod attestation {
     }
 
     #[tokio::test]
+    async fn one_attested_key_registers_only_so_many_tokens() {
+        let apple = FakeApple::new();
+        let root = apple.root_pem.clone();
+        let h = Harness::start(move |cfg| {
+            cfg.attestation.required = true;
+            cfg.attestation.root = Some(root);
+            cfg.limits.attested_key_registrations_per_hour = 1;
+        })
+        .await;
+        let key = attest(&h, &apple, PRODUCTION).await;
+        assert_eq!(
+            register(&h, &apple, &key, TOKEN, false, TOKEN)
+                .await
+                .status(),
+            200
+        );
+        let other = "ff".repeat(32);
+        let r = register(&h, &apple, &key, &other, false, &other).await;
+        assert_eq!(r.status(), 429);
+    }
+
+    #[tokio::test]
     async fn another_apps_key_is_not_attested() {
         let apple = FakeApple::new();
         let h = harness(&apple).await;

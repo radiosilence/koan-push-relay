@@ -216,6 +216,13 @@ pub struct Limits {
     /// prove the token. Phones on a mobile network share an address, but a
     /// phone registers once per server every month or so.
     pub ip_registrations_per_minute: u32,
+    /// Challenges and attestations from one address a minute. Apart from
+    /// registrations, so attesting does not spend what registering needs.
+    pub ip_attestations_per_minute: u32,
+    /// Registrations one attested key can make an hour, from any address:
+    /// what bounds a single device, a jailbroken one included, however many
+    /// addresses it calls from.
+    pub attested_key_registrations_per_hour: u32,
     /// Revocations from one address a minute.
     pub ip_revocations_per_minute: u32,
     /// Pushes sent to Apple a second, from everyone.
@@ -254,6 +261,8 @@ impl Default for Limits {
             device_bad_activity_tokens_per_hour: 10,
             ip_pushes_per_minute: 6000,
             ip_registrations_per_minute: 120,
+            ip_attestations_per_minute: 120,
+            attested_key_registrations_per_hour: 30,
             ip_revocations_per_minute: 60,
             global_pushes_per_second: 20_000,
             proofs_per_second: 20,
