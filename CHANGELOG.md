@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2
+
+### Added
+
+- **`koan-relay-client`.** The crate kōan's apps and servers call the relay through: registering devices and Live Activities, revoking, pushes and activity updates, with the relay's answers as errors to act on. It shares the relay's types and version, and is reached over https only. A Live Activity's absent fields are now left out of what Apple is sent, and a field the relay does not know is dropped rather than refused.
+- **App Attest.** A registration on the production gateway needs an App Attest assertion, so nothing reaches Apple for it unless it comes from kōan's app on a real device. `/v1/challenge` and `/v1/attest` give the app a key the relay has verified against Apple's root; the client crate gains `challenge`, `attest`, `register_attested` and `client_data`. The relay stays stateless: challenges and keys are sealed, not stored.
+
 ## 0.1.1
 
 ### Fixed
