@@ -13,6 +13,7 @@ koan-relay-client = { path = "../koan-relay-client", default-features = false }
 aws-lc-rs = "1"
 axum = "0.8"
 base64 = "0.23"
+ciborium = "0.2"
 env_logger = "0.11"
 figment = { version = "0.10", features = ["toml", "env"] }
 hex = "0.4"
@@ -26,6 +27,7 @@ serde_json = "1.0.154"
 tokio = { version = "1.54.0", features = ["rt-multi-thread", "net", "macros", "signal", "sync", "time"] }
 tower = { version = "0.5", features = ["util", "limit", "load-shed"] }
 tower-http = { version = "0.7", features = ["catch-panic", "limit", "timeout"] }
+x509-parser = { version = "0.18", features = ["verify-aws"] }
 
 [dev-dependencies]
 # The client, HTTP and all, to drive the relay in the tests. Dev-dependency
@@ -35,3 +37,5 @@ koan-relay-client = { path = "../koan-relay-client" }
 # always speaks HTTP/2 to Apple.
 axum = { version = "0.8", features = ["http2"] }
 tempfile = "3"
+# A stand-in for Apple's App Attest certificate chain.
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }

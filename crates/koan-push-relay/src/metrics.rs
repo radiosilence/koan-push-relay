@@ -10,9 +10,18 @@ pub enum Route {
     Revoke,
     Push,
     RegisterActivity,
+    Challenge,
+    Attest,
 }
 
-const ROUTES: [&str; 4] = ["register", "revoke", "push", "register_activity"];
+const ROUTES: [&str; 6] = [
+    "register",
+    "revoke",
+    "push",
+    "register_activity",
+    "challenge",
+    "attest",
+];
 const KINDS: usize = crate::apns::KINDS.len();
 
 #[derive(Debug, Clone, Copy)]

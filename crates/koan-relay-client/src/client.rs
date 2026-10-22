@@ -1,6 +1,20 @@
 use std::time::Duration;
 
-use crate::{ActivityState, Kind, Registered, RegisteredActivity, Slot, is_blob};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+use crate::{ActivityState, Attested, Kind, Registered, RegisteredActivity, Slot, is_blob};
+
+/// An App Attest assertion over one registration.
+#[derive(Clone, Copy)]
+pub struct Assertion<'a> {
+    /// The attested key, as `Client::attest` returned it.
+    pub key: &'a str,
+    /// The challenge the assertion was made for.
+    pub challenge: &'a str,
+    /// What `generateAssertion` returned.
+    pub assertion: &'a [u8],
+}
 
 /// A push to a device's handle. Live Activity updates go through
 /// `Client::update_activity`.
@@ -84,14 +98,79 @@ impl Client {
     }
 
     /// Register a device token, for the server the app gave `slot`.
-    /// `sandbox` is true for development builds.
+    /// `sandbox` is true for development builds. Only the sandbox gateway
+    /// takes a registration without App Attest: see `register_attested`.
     pub fn register(&self, token: &[u8], slot: &Slot, sandbox: bool) -> Result<Registered, Error> {
-        let body = serde_json::json!({
+        self.register_with(token, slot, sandbox, None)
+    }
+
+    /// Register a device token with an App Attest assertion: what the
+    /// production gateway requires. `assertion.assertion` is what
+    /// `DCAppAttestService.generateAssertion` returned for the SHA-256 of
+    /// `client_data(challenge, token, slot, sandbox)`.
+    pub fn register_attested(
+        &self,
+        token: &[u8],
+        slot: &Slot,
+        sandbox: bool,
+        assertion: &Assertion<'_>,
+    ) -> Result<Registered, Error> {
+        self.register_with(token, slot, sandbox, Some(assertion))
+    }
+
+    fn register_with(
+        &self,
+        token: &[u8],
+        slot: &Slot,
+        sandbox: bool,
+        assertion: Option<&Assertion<'_>>,
+    ) -> Result<Registered, Error> {
+        let mut body = serde_json::json!({
             "token": hex::encode(token),
             "slot": hex::encode(slot),
             "sandbox": sandbox,
         });
+        if let Some(a) = assertion {
+            body["attest"] = serde_json::json!({
+                "key": a.key,
+                "challenge": a.challenge,
+                "assertion": URL_SAFE_NO_PAD.encode(a.assertion),
+            });
+        }
         self.call("v1/register", &body)?
+            .json()
+            .map_err(|e| Error::Transport(e.to_string()))
+    }
+
+    /// A challenge for an attestation or an assertion, good for five
+    /// minutes.
+    pub fn challenge(&self) -> Result<String, Error> {
+        let answer: serde_json::Value = self
+            .call("v1/challenge", &serde_json::json!({}))?
+            .json()
+            .map_err(|e| Error::Transport(e.to_string()))?;
+        answer["challenge"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| Error::Transport("no challenge".into()))
+    }
+
+    /// Have the relay verify an App Attest key: `key_id` from
+    /// `DCAppAttestService.generateKey`, and `attestation` from `attestKey`
+    /// for the SHA-256 of `challenge`'s bytes. The returned key is what
+    /// `register_attested` takes; keep it until it expires.
+    pub fn attest(
+        &self,
+        key_id: &[u8],
+        attestation: &[u8],
+        challenge: &str,
+    ) -> Result<Attested, Error> {
+        let body = serde_json::json!({
+            "key_id": URL_SAFE_NO_PAD.encode(key_id),
+            "attestation": URL_SAFE_NO_PAD.encode(attestation),
+            "challenge": challenge,
+        });
+        self.call("v1/attest", &body)?
             .json()
             .map_err(|e| Error::Transport(e.to_string()))
     }

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "client")]
 mod client;
 #[cfg(feature = "client")]
-pub use client::{Client, Error, Push};
+pub use client::{Assertion, Client, Error, Push};
 
 /// The relay kōan's apps use.
 pub const DEFAULT_URL: &str = "https://push.koan.rocks";
@@ -89,6 +89,27 @@ impl std::fmt::Debug for Registered {
     }
 }
 
+/// An App Attest key the relay has verified. Its `Debug` hides the key.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attested {
+    /// For `register_attested`: the key, sealed by the relay.
+    pub key: String,
+    /// Apple's production environment, rather than development.
+    pub production: bool,
+    /// Unix seconds after which the relay no longer takes it: attest a new
+    /// key before then.
+    pub expires: u64,
+}
+
+impl std::fmt::Debug for Attested {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Attested")
+            .field("production", &self.production)
+            .field("expires", &self.expires)
+            .finish_non_exhaustive()
+    }
+}
+
 /// What registering a Live Activity returns. Its `Debug` hides the handle.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisteredActivity {
@@ -102,6 +123,20 @@ impl std::fmt::Debug for RegisteredActivity {
             .field("expires", &self.expires)
             .finish_non_exhaustive()
     }
+}
+
+/// What an App Attest assertion for a registration signs: the relay's
+/// challenge, the device token, the slot and the gateway, so the assertion
+/// registers exactly these. The app hashes it (SHA-256) and passes the hash
+/// to `DCAppAttestService.generateAssertion`.
+pub fn client_data(challenge: &str, token: &[u8], slot: &Slot, sandbox: bool) -> Vec<u8> {
+    let mut data = b"koan-relay register 1\0".to_vec();
+    data.extend_from_slice(challenge.as_bytes());
+    data.push(0);
+    data.extend_from_slice(token);
+    data.extend_from_slice(slot);
+    data.push(u8::from(sandbox));
+    data
 }
 
 /// Whether `blob` is something a notification may carry: base64url without

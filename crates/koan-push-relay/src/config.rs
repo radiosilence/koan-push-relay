@@ -45,6 +45,7 @@ pub struct Config {
     /// found by it.
     pub token_key: String,
     pub limits: Limits,
+    pub attestation: AttestationConfig,
 }
 
 impl Default for Config {
@@ -60,6 +61,7 @@ impl Default for Config {
             handles: HandlesConfig::default(),
             token_key: String::new(),
             limits: Limits::default(),
+            attestation: AttestationConfig::default(),
         }
     }
 }
@@ -121,6 +123,30 @@ impl ApnsKey {
             (_, Some(path)) => std::fs::read_to_string(path)
                 .map_err(|e| format!("reading {}: {e}", path.display())),
             _ => Err(format!("key {} has neither key nor key_path", self.key_id)),
+        }
+    }
+}
+
+/// App Attest: whether a registration must come from kōan's app on a real
+/// device.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct AttestationConfig {
+    /// Whether a registration on the production gateway needs an App Attest
+    /// assertion from a production key. The sandbox gateway takes one when
+    /// given, and does without, since development builds run where App
+    /// Attest does not (the simulator).
+    pub required: bool,
+    /// The root App Attest certificates must lead to, PEM, in place of
+    /// Apple's. For tests.
+    pub root: Option<String>,
+}
+
+impl Default for AttestationConfig {
+    fn default() -> Self {
+        Self {
+            required: true,
+            root: None,
         }
     }
 }

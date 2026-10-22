@@ -47,6 +47,10 @@ const REVOKER: u8 = 2;
 /// A handle for a Live Activity's token, which also carries its device's
 /// token hash, so the device's revocations and quotas reach it.
 const ACTIVITY: u8 = 4;
+/// An App Attest key the relay has verified: `token` is its P-256 public
+/// key, and `sandbox` its development environment. It is neither pushed
+/// through nor revokes; registration takes it.
+const ATTESTED: u8 = 8;
 const HASH_LEN: usize = 16;
 
 /// The shortest and longest device token accepted, in bytes. Apple's are 32
@@ -77,6 +81,8 @@ pub struct Device {
     /// For a Live Activity's handle, the token hash of the device it is on;
     /// `token` is then the activity's.
     pub activity_of: Option<TokenHash>,
+    /// An attested key, not a device.
+    pub attested: bool,
 }
 
 /// Never shows the token: a `{:?}` in a log line must not leak one.
@@ -88,6 +94,7 @@ impl std::fmt::Debug for Device {
             .field("slot", &self.slot)
             .field("revoker", &self.revoker)
             .field("activity", &self.activity_of.is_some())
+            .field("attested", &self.attested)
             .finish_non_exhaustive()
     }
 }
@@ -167,6 +174,13 @@ impl Handles {
         self.seal_body(flags, now_ms, slot, Some(device), token)
     }
 
+    /// The sealed form of an App Attest key the relay has verified, minted at
+    /// `now_ms`.
+    pub fn seal_attested(&self, public_key: &[u8], production: bool, now_ms: u64) -> String {
+        let flags = ATTESTED | if production { 0 } else { SANDBOX };
+        self.seal_body(flags, now_ms, &[0; SLOT_LEN], None, public_key)
+    }
+
     fn seal_body(
         &self,
         flags: u8,
@@ -224,6 +238,10 @@ impl Handles {
         let sandbox = plain[0] & SANDBOX != 0;
         let revoker = plain[0] & REVOKER != 0;
         let activity = plain[0] & ACTIVITY != 0;
+        let attested = plain[0] & ATTESTED != 0;
+        if attested && (revoker || activity) {
+            return Err(Invalid::Malformed);
+        }
         let minted_ms = u64::from_be_bytes(plain[1..9].try_into().expect("eight bytes"));
         let slot: Slot = plain[9..FIXED_LEN].try_into().expect("slot length");
         let (activity_of, token) = if activity {
@@ -253,6 +271,7 @@ impl Handles {
             slot,
             revoker,
             activity_of,
+            attested,
         })
     }
 }
@@ -314,6 +333,25 @@ mod tests {
         assert_eq!(opened.slot, SLOT);
         let plain = h.open(&h.seal(&token, &SLOT, true, 1_000, false), 2_000);
         assert_eq!(plain.unwrap().activity_of, None);
+    }
+
+    #[test]
+    fn an_attested_key_opens_as_one_and_as_nothing_else() {
+        let h = handles();
+        let key = [0x04; 65];
+        let opened = h.open(&h.seal_attested(&key, true, 1_000), 2_000).unwrap();
+        assert!(opened.attested && !opened.revoker && opened.activity_of.is_none());
+        assert_eq!(opened.token, key);
+        assert!(!opened.sandbox, "production");
+        assert!(
+            h.open(&h.seal_attested(&key, false, 1_000), 2_000)
+                .unwrap()
+                .sandbox
+        );
+        let handle = h
+            .open(&h.seal(&[1; 32], &SLOT, false, 1_000, false), 2_000)
+            .unwrap();
+        assert!(!handle.attested);
     }
 
     #[test]

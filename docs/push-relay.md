@@ -6,7 +6,7 @@ The key belongs to the developer's Apple account, which answers to Apple for eve
 
 That bound holds only together with the app: its notification service extension shows nothing a server wrote, only its own template (see [What a phone shows](#what-a-phone-shows)).
 
-The relay does not serve real traffic until registration also requires an [App Attest](https://developer.apple.com/documentation/devicecheck/establishing-your-app-s-integrity) assertion ([radiosilence/koan#1418](https://github.com/radiosilence/koan/issues/1418)). Until then, made-up tokens are bounded by rate, as below, but not by who asks.
+A registration on the production gateway needs an [App Attest](https://developer.apple.com/documentation/devicecheck/establishing-your-app-s-integrity) assertion: Apple's word that it comes from kōan's app on a real device. Nothing reaches Apple for a production registration without one, so made-up tokens there are bounded by who can ask as well as by rate. The sandbox gateway, for development builds, takes an assertion when given and does without one, since development builds also run where App Attest does not (the simulator); see [App Attest](#app-attest).
 
 The relay is `crates/koan-push-relay` in this repository. This page specifies its API; running it is under [Operating the relay](#operating-the-relay).
 
@@ -58,19 +58,47 @@ Room in both counts is taken before a proof is sent and handed back if Apple acc
 
 A Live Activity's update takes the same room in everyone's count, and in a count of its device's activity tokens Apple refused, since only that device's revoker could have registered it: one installation can make the relay send Apple no more made-up tokens than that count allows.
 
+## App Attest
+
+The app makes a key in the Secure Enclave (`DCAppAttestService.generateKey`), asks the relay for a challenge, has Apple attest the key over the challenge (`attestKey`, with the SHA-256 of the challenge's bytes), and sends the attestation to `/v1/attest`. The relay checks it as Apple describes: the certificate chain to Apple's App Attestation root, the nonce in the credential certificate against the authenticator data and the challenge, the key's id, the app id (team id and bundle id) in the relying party hash, a counter of zero, and the environment, production or development. It answers with the key sealed as handles are, which the app keeps until it expires and then attests a new key.
+
+Each registration then carries an assertion (`generateAssertion`) over the SHA-256 of this, for a fresh challenge:
+
+```text
+"koan-relay register 1" | 0x00 | challenge (as sent) | 0x00 | device token | slot (16) | sandbox (1 byte, 0 or 1)
+```
+
+so an assertion registers exactly the token, slot and gateway it was made for. A development key registers only on the sandbox gateway.
+
+The relay keeps no state for any of this. A challenge is the time it was issued, random bytes and an HMAC over both, good for five minutes; the attested key is sealed. The assertion's counter is not tracked: an assertion is bound to a challenge that lapses in minutes and to the registration it signs, so replaying one only repeats that registration.
+
 ## Endpoints
 
 All requests are `POST` with a JSON body of at most 8 KiB, and `Content-Type: application/json`; anything else is refused with `415` before it is read. That keeps a web page from making visitors' browsers call the relay: a cross-origin JSON request needs a CORS preflight, which the relay never answers. Unknown fields are refused with `400`, unlike the link protocol: the relay accepts nothing it does not write itself. A body that takes longer than five seconds to arrive is answered `408`, and one too large `413`. Errors have the body `{"error": "<reason>"}`; the reason is for logs, and clients act on the status alone.
+
+### `POST /v1/challenge`
+
+Called by the app, with `{}`. The answer is `200` with `{ "challenge": "<base64url>", "expires": <unix seconds> }`.
+
+### `POST /v1/attest`
+
+Called by the app.
+
+```json
+{ "key_id": "<base64url>", "attestation": "<base64url>", "challenge": "<challenge>" }
+```
+
+The answer is `200` with `{ "key": "<attested key>", "production": true, "expires": <unix seconds> }`. `400` means the attestation does not check out, or the challenge has lapsed or was not this relay's.
 
 ### `POST /v1/register`
 
 Called by the app.
 
 ```json
-{ "token": "<device token, hex>", "sandbox": false, "slot": "<16 bytes, hex>" }
+{ "token": "<device token, hex>", "sandbox": false, "slot": "<16 bytes, hex>", "attest": { "key": "<attested key>", "challenge": "<challenge>", "assertion": "<base64url>" } }
 ```
 
-`sandbox` is true for development builds, whose tokens only Apple's sandbox gateway accepts; it may be absent. The answer is `200`:
+`sandbox` is true for development builds, whose tokens only Apple's sandbox gateway accepts; it may be absent. `attest` is required on the production gateway, and optional on sandbox; `400` names what is wrong with it. The answer is `200`:
 
 ```json
 { "handle": "<handle>", "expires": 1767225600 }

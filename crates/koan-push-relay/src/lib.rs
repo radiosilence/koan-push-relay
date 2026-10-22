@@ -25,6 +25,7 @@
 
 pub mod activity;
 pub mod apns;
+mod attest;
 pub mod config;
 mod handle;
 mod metrics;
@@ -42,6 +43,8 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -101,6 +104,9 @@ type SlotKey = (TokenHash, Slot);
 pub struct Relay {
     handles: Handles,
     hasher: TokenHasher,
+    attestor: attest::Attestor,
+    /// Whether a production registration needs an App Attest assertion.
+    require_attestation: bool,
     revocations: Revocations,
     apns: Apns,
     clock: Clock,
@@ -195,6 +201,11 @@ impl Relay {
         }
         let handles = Handles::new(&keys, cfg.handles.current, lifetime_ms)?;
         let hasher = TokenHasher::new(&secret("token_key", &cfg.token_key)?);
+        let attestor = attest::Attestor::new(
+            &format!("{}.{}", cfg.apns.team_id, cfg.topic),
+            cfg.attestation.root.as_deref(),
+            &secret("token_key", &cfg.token_key)?,
+        )?;
         let revocations =
             Revocations::open(&cfg.store, l.max_revocations, unix_ms(), MAX_LIFETIME_MS)?;
         let apns = Apns::new(&cfg.apns, &cfg.topic)?;
@@ -207,6 +218,8 @@ impl Relay {
         Ok(Arc::new(Self {
             handles,
             hasher,
+            attestor,
+            require_attestation: cfg.attestation.required,
             revocations,
             apns,
             clock: Clock::new(),
@@ -675,6 +688,8 @@ impl Relay {
 /// The public API.
 pub fn router(relay: Arc<Relay>) -> Router {
     Router::new()
+        .route("/v1/challenge", post(challenge))
+        .route("/v1/attest", post(attest_key))
         .route("/v1/register", post(register))
         .route("/v1/revoke", post(revoke))
         .route("/v1/register-activity", post(register_activity))
@@ -820,6 +835,36 @@ struct RegisterRequest {
     /// Sixteen bytes, hex, that the app chose for the server this handle is
     /// for, and keeps for it across renewals.
     slot: String,
+    /// An App Attest assertion over this registration.
+    #[serde(default)]
+    attest: Option<Assertion>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Assertion {
+    /// The attested key, as `/v1/attest` sealed it.
+    key: String,
+    /// A challenge from `/v1/challenge`.
+    challenge: String,
+    /// The assertion, base64url: CBOR from `generateAssertion`, over the
+    /// SHA-256 of `client_data`.
+    assertion: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmptyRequest {}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttestRequest {
+    /// The key's id from `generateKey`, base64url.
+    key_id: String,
+    /// The attestation from `attestKey`, base64url, made over the SHA-256 of
+    /// the challenge.
+    attestation: String,
+    challenge: String,
 }
 
 #[derive(Deserialize)]
@@ -854,6 +899,113 @@ struct PushRequest {
     state: Option<ActivityState>,
 }
 
+impl Relay {
+    /// Whether `a` is an assertion, by a key the relay attested, over this
+    /// registration, made for a challenge still in its life.
+    fn check_assertion(
+        &self,
+        a: &Assertion,
+        token: &[u8],
+        slot: &Slot,
+        sandbox: bool,
+    ) -> Result<(), Refusal> {
+        let key = self.handles.open(&a.key, unix_ms()).map_err(|e| match e {
+            Invalid::Future => Refusal::Busy,
+            _ => Refusal::Bad("not an attested key"),
+        })?;
+        if !key.attested {
+            return Err(Refusal::Bad("not an attested key"));
+        }
+        // A development key registers only on the sandbox gateway.
+        if key.sandbox && !sandbox {
+            return Err(Refusal::Bad(
+                "a development key cannot register for production",
+            ));
+        }
+        self.attestor
+            .check_challenge(&a.challenge, unix_ms())
+            .map_err(Refusal::Bad)?;
+        let assertion = URL_SAFE_NO_PAD
+            .decode(&a.assertion)
+            .map_err(|_| Refusal::Bad("the assertion is not base64url"))?;
+        let client_data = koan_relay_client::client_data(&a.challenge, token, slot, sandbox);
+        self.attestor
+            .assert(&key.token, &assertion, &client_data)
+            .map_err(Refusal::Bad)
+    }
+}
+
+async fn challenge(
+    State(relay): State<Arc<Relay>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let answer = async {
+        json_only(&headers)?;
+        let caller = relay.caller(&headers, peer, PROOF_PREFIX)?;
+        relay
+            .ip_registrations
+            .check(caller, relay.clock.now())
+            .map_err(limited)?;
+        let _: EmptyRequest = read(body).await?;
+        let now = unix_ms();
+        Ok(Json(json!({
+            "challenge": relay.attestor.challenge(now),
+            "expires": (now + attest::CHALLENGE_LIFE_MS) / 1000,
+        }))
+        .into_response())
+    }
+    .await;
+    relay.answer(Route::Challenge, answer)
+}
+
+async fn attest_key(
+    State(relay): State<Arc<Relay>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let answer = async {
+        json_only(&headers)?;
+        let caller = relay.caller(&headers, peer, PROOF_PREFIX)?;
+        relay
+            .ip_registrations
+            .check(caller, relay.clock.now())
+            .map_err(limited)?;
+        let req: AttestRequest = read(body).await?;
+        let _working = relay.requests.try_acquire().map_err(|_| Refusal::Busy)?;
+        relay
+            .attestor
+            .check_challenge(&req.challenge, unix_ms())
+            .map_err(Refusal::Bad)?;
+        let key_id = URL_SAFE_NO_PAD
+            .decode(&req.key_id)
+            .map_err(|_| Refusal::Bad("the key id is not base64url"))?;
+        let attestation = URL_SAFE_NO_PAD
+            .decode(&req.attestation)
+            .map_err(|_| Refusal::Bad("the attestation is not base64url"))?;
+        let now = unix_ms();
+        let key = relay
+            .attestor
+            .attest(
+                &key_id,
+                &attestation,
+                req.challenge.as_bytes(),
+                (now / 1000) as i64,
+            )
+            .map_err(Refusal::Bad)?;
+        Ok(Json(json!({
+            "key": relay.handles.seal_attested(&key.public_key, key.production, now),
+            "production": key.production,
+            "expires": (now + relay.handles.lifetime_ms()) / 1000,
+        }))
+        .into_response())
+    }
+    .await;
+    relay.answer(Route::Attest, answer)
+}
+
 async fn register(
     State(relay): State<Arc<Relay>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -871,6 +1023,15 @@ async fn register(
         let _working = relay.requests.try_acquire().map_err(|_| Refusal::Busy)?;
         let token = device_token(&req.token)?;
         let slot = slot(&req.slot)?;
+        // Before anything reaches Apple: a production registration comes from
+        // kōan's app on a real device, or does not happen.
+        match &req.attest {
+            Some(a) => relay.check_assertion(a, &token, &slot, req.sandbox)?,
+            None if !req.sandbox && relay.require_attestation => {
+                return Err(Refusal::Bad("an App Attest assertion is required"));
+            }
+            None => {}
+        }
         let device = relay.prove(token.clone(), req.sandbox, caller).await?;
         // Proven again: whatever stopped it here has passed.
         relay.gone.lock().remove(&device);
@@ -1053,8 +1214,8 @@ async fn push(
                 Invalid::Future => Refusal::Busy,
                 _ => Refusal::Gone,
             })?;
-        if device.revoker {
-            return Err(Refusal::Bad("a revoker is not a handle"));
+        if device.revoker || device.attested {
+            return Err(Refusal::Bad("not a handle"));
         }
         if device.activity_of.is_some() != (req.kind == Kind::Activity) {
             return Err(Refusal::Bad(
