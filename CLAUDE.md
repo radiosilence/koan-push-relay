@@ -29,7 +29,7 @@ The static binaries are built once per architecture (`linux-build`); the image o
 ## Check
 
 ```sh
-just check   # Cargo.lock clean, fmt --check, clippy -D warnings, tests, the Pulumi package's typecheck and tests
+just check   # Cargo.lock clean, fmt --check, clippy -D warnings, tests, the Pulumi package's typecheck and tests, actionlint
 just fast    # what the pre-push hook runs
 just fmt
 ```
