@@ -12,7 +12,7 @@ repository = "https://github.com/radiosilence/koan-push-relay"
 
 [workspace.dependencies]
 reqwest = { version = "0.13", default-features = false, features = ["http2", "json", "rustls"] }
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 
 [profile.release]
 strip = true

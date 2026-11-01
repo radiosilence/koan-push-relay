@@ -1,0 +1,1 @@
+- **Dependencies.** rusqlite 0.41 (bundled SQLite from libsqlite3-sys 0.39), parking_lot 0.13 and tokio 1.54.1, with the lockfile brought up to date.
