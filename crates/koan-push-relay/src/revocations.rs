@@ -177,12 +177,17 @@ impl Revocations {
         let reference = now_ms.min(self.newest.load(Ordering::Relaxed).max(1));
         let cutoff = reference.saturating_sub(lifetime_ms + SLACK_MS);
         let db = self.db.lock();
-        db.execute(
-            "DELETE FROM revocations WHERE revoked_ms < ?1",
-            [cutoff as i64],
-        )
-        .map_err(|e| e.to_string())?;
-        self.map.write().retain(|_, at| *at >= cutoff);
+        let deleted = db
+            .execute(
+                "DELETE FROM revocations WHERE revoked_ms < ?1",
+                [cutoff as i64],
+            )
+            .map_err(|e| e.to_string())?;
+        // The table and the map hold the same rows: when none went, the
+        // write lock every push's lookup waits on is not worth taking.
+        if deleted > 0 {
+            self.map.write().retain(|_, at| *at >= cutoff);
+        }
         Ok(())
     }
 

@@ -282,15 +282,23 @@ impl Relay {
                 // The proxies in front append, as a line of their own or to
                 // the caller's: counting `client_ip_hops` back from the end
                 // passes over them, and anything further back came from the
-                // caller.
-                let found = headers
-                    .get_all(name)
-                    .iter()
-                    .rev()
-                    .filter_map(|v| v.to_str().ok())
-                    .flat_map(|v| v.rsplit(','))
-                    .nth(self.client_ip_hops - 1)
-                    .and_then(|v| v.trim().parse::<IpAddr>().ok());
+                // caller. A line that is not text could be a proxy's, so
+                // the count stops there rather than passing over it.
+                let mut left = self.client_ip_hops;
+                let found = 'found: {
+                    for line in headers.get_all(name).iter().rev() {
+                        let Ok(line) = line.to_str() else {
+                            break 'found None;
+                        };
+                        for address in line.rsplit(',') {
+                            left -= 1;
+                            if left == 0 {
+                                break 'found address.trim().parse::<IpAddr>().ok();
+                            }
+                        }
+                    }
+                    None
+                };
                 match found {
                     Some(ip) => ip,
                     None => {
@@ -328,15 +336,24 @@ impl Relay {
         self.ip_registrations.sweep(now);
         self.ip_revocations.sweep(now);
         self.ip_bad_tokens.sweep(now);
+    }
+
+    /// Forget stopped devices and activities whose handles have expired.
+    /// Hourly rather than with the minute's sweep: every push takes these
+    /// locks, and an entry kept an hour too long costs nothing.
+    fn forget_stopped(&self) {
         let now_ms = unix_ms();
         self.gone.lock().retain(|_, until| *until > now_ms);
         self.ended.lock().retain(|_, until| *until > now_ms);
     }
 
-    /// Until when a device or activity stopped now stays stopped: past it,
-    /// no handle that opens now still does.
-    fn stopped_until(&self) -> u64 {
-        unix_ms() + self.handles.lifetime_ms()
+    /// Until when the device or activity `job` went to stays stopped: past
+    /// the handle's expiry, or a lifetime from now if it was minted earlier.
+    /// Another handle for it minted further ahead can outlive this; its first
+    /// push after that reaches Apple, which answers as before and stops it
+    /// again.
+    fn stopped_until(&self, job: &Job) -> u64 {
+        unix_ms().max(job.minted_ms) + self.handles.lifetime_ms()
     }
 
     fn take(&self, allowance: Allowance, now: u64) -> Result<(), Refusal> {
@@ -509,7 +526,6 @@ impl Relay {
     ) -> Delivery {
         let relay = self.clone();
         let task = tokio::spawn(async move {
-            let _permit = permit;
             let mut charge = charge;
             let to = Target {
                 token: &job.token,
@@ -518,6 +534,9 @@ impl Relay {
                 may_probe: !job.proof && job.kind != Kind::Activity,
             };
             let delivery = relay.apns.send(&to, job.kind, &job.content).await;
+            // Apple has answered: retiring a gone device writes to disk,
+            // which is no reason to hold a place among pushes to Apple.
+            drop(permit);
             let now = relay.clock.now();
             match (&delivery, job.proof) {
                 // An activity that has ended: its handle is retired, the
@@ -588,7 +607,7 @@ impl Relay {
     /// Stop pushes to a Live Activity Apple has called ended or unknown.
     fn end_activity(&self, job: &Job) {
         if let Some(activity) = job.activity {
-            let until = self.stopped_until();
+            let until = self.stopped_until(job);
             let mut ended = self.ended.lock();
             if ended.len() < self.max_gone {
                 ended.insert(activity, until);
@@ -623,7 +642,7 @@ impl Relay {
             return delivery;
         }
         {
-            let until = self.stopped_until();
+            let until = self.stopped_until(job);
             let mut gone = self.gone.lock();
             if gone.contains_key(&device) {
                 return delivery;
@@ -778,6 +797,16 @@ pub fn metrics_router(relay: Arc<Relay>) -> Router {
                         relay.revocations.len() as u64,
                     ),
                     (
+                        "koan_relay_gone",
+                        "Gone devices stopped in memory: being retired, or not recorded for want of room.",
+                        relay.gone.lock().len() as u64,
+                    ),
+                    (
+                        "koan_relay_ended_activities",
+                        "Live Activities Apple has ended, stopped in memory.",
+                        relay.ended.lock().len() as u64,
+                    ),
+                    (
                         "koan_relay_tracked_devices",
                         "Devices with a notification count.",
                         relay.device_alerts.tracked() as u64,
@@ -858,6 +887,7 @@ async fn upkeep(relay: Arc<Relay>) {
             _ = prune.tick() => {
                 let relay = relay.clone();
                 let pruned = tokio::task::spawn_blocking(move || {
+                    relay.forget_stopped();
                     relay.revocations.prune(unix_ms(), MAX_LIFETIME_MS)
                 })
                 .await;
