@@ -1074,7 +1074,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
- "tower",
  "tower-http 0.7.1",
  "x509-parser",
 ]
@@ -2213,7 +2212,6 @@ dependencies = [
  "pin-project-lite",
  "sync_wrapper",
  "tokio",
- "tokio-util",
  "tower-layer",
  "tower-service",
  "tracing",

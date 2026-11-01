@@ -78,7 +78,12 @@ impl Client {
     /// https: handles, revokers and tokens are credentials. Plain http is
     /// allowed only to a loopback address.
     pub fn new(base: &str) -> Result<Self, Error> {
-        let base = reqwest::Url::parse(base).map_err(|e| Error::Bad(format!("relay URL: {e}")))?;
+        let mut base =
+            reqwest::Url::parse(base).map_err(|e| Error::Bad(format!("relay URL: {e}")))?;
+        // Joined against, so a relay under a path keeps its last segment.
+        if !base.path().ends_with('/') {
+            base.set_path(&format!("{}/", base.path()));
+        }
         let loopback = match base.host() {
             Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
             Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
@@ -293,11 +298,14 @@ mod tests {
 
     #[test]
     fn a_relay_under_a_path_keeps_it() {
-        let c = Client::new("https://example.org/relay/").unwrap();
-        assert_eq!(
-            c.base.join("v1/push").unwrap().as_str(),
-            "https://example.org/relay/v1/push"
-        );
+        for base in ["https://example.org/relay/", "https://example.org/relay"] {
+            let c = Client::new(base).unwrap();
+            assert_eq!(
+                c.base.join("v1/push").unwrap().as_str(),
+                "https://example.org/relay/v1/push",
+                "{base}"
+            );
+        }
     }
 
     #[test]

@@ -212,7 +212,7 @@ Each relay process counts:
 
 A server's handle is counted by device and slot, so its renewals share it. A device is counted by its token, so its ceiling holds whichever servers hold its handles. A caller address is counted by its IPv4 address, or its IPv6 /64 for pushes and /48 for registrations, revocations and refused tokens: the larger block one site is commonly given, so a site cannot spread made-up tokens over its addresses, at the price that neighbours in a /48 share those allowances. Each count allows its whole allowance as a burst and then refills evenly over the period. A push the relay or Apple could not take is not counted against its server or device; one that reached Apple stays counted against the relay's own rates towards Apple, whatever Apple answered.
 
-Behind proxies, the address is read from the header the relay is configured to trust (`client_ip_header`), across all its lines, `client_ip_hops` addresses back from the end. A request without a readable address there is refused with `400`, rather than counted as the proxy's own address, where every such caller would share one allowance. The relay must be reachable only through the proxy that writes that header, since anyone reaching it directly can write it themselves.
+Behind proxies, the address is read from the header the relay is configured to trust (`client_ip_header`), across all its lines, `client_ip_hops` addresses back from the end. A request without a readable address there, or with a line that is not text before it, is refused with `400`, rather than counted as the proxy's own address, where every such caller would share one allowance. The relay must be reachable only through the proxy that writes that header, since anyone reaching it directly can write it themselves.
 
 ## When Apple refuses the relay
 
@@ -225,6 +225,7 @@ It sees, per request: a device token or a Live Activity's (registration only), a
 It keeps:
 
 - the revocation table: a keyed hash of each revoking or gone device's token and when, for 365 days, and the latest time its clock has read;
+- in memory, keyed hashes of gone devices it has not yet written to the revocation table or could not write there, and of Live Activities Apple has ended, each until the handles that could reach it when it was stopped have expired;
 - counters for quotas, in memory: keyed hashes of tokens, slots, and caller addresses as they are (IPv6 cut to its prefix), each forgotten once its allowance has refilled;
 - aggregate counts by route and outcome, pushes and proofs.
 
@@ -302,7 +303,7 @@ max_requests = 50000
 
 Every push is answered from memory, so Apple's round trip, carried over `connections` HTTP/2 connections per gateway, is what bounds throughput.
 
-`/metrics` on the metrics listener counts requests by route and outcome, pushes sent by kind, proofs by Apple's answer, and shows each gateway's breaker (`koan_relay_production_held`, `koan_relay_sandbox_held`), which is worth an alert.
+`/metrics` on the metrics listener counts requests by route and outcome, pushes sent by kind, proofs by Apple's answer, and shows each gateway's breaker (`koan_relay_production_held`, `koan_relay_sandbox_held`), which is worth an alert. `koan_relay_gone` and `koan_relay_ended_activities` show how full the in-memory stop sets are against `limits.max_tracked`; a full set stops recording, and pushes to newly ended activities reach Apple until it drains.
 
 The revocation table is a SQLite file, so one process writes it. Replicas each keep their own quotas, which multiplies the allowances by the number of replicas, and would need a shared revocation table; until there is a need for more than one process, there is one.
 

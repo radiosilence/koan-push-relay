@@ -248,6 +248,8 @@ pub struct Target<'a> {
 
 pub struct Apns {
     topic: String,
+    /// A Live Activity's pushes go to the app's topic with a suffix.
+    activity_topic: String,
     production: Option<Gateway>,
     sandbox: Option<Gateway>,
     clock: Clock,
@@ -280,6 +282,7 @@ impl Apns {
         }
         Ok(Self {
             topic: topic.to_string(),
+            activity_topic: format!("{topic}.push-type.liveactivity"),
             production,
             sandbox,
             clock: Clock::new(),
@@ -325,10 +328,9 @@ impl Apns {
             Err(e) => return Delivery::Unavailable(format!("signing: {e}")),
         };
         let h = headers(kind, to.slot);
-        // A Live Activity's pushes go to the app's topic with a suffix.
         let topic = match kind {
-            Kind::Activity => format!("{}.push-type.liveactivity", self.topic),
-            _ => self.topic.clone(),
+            Kind::Activity => &self.activity_topic,
+            _ => &self.topic,
         };
         let request = gateway
             .client()
