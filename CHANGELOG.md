@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.3
+
+### Security
+
+- Update tokio and other packages for security
+
+### Changed
+
+- **The Pulumi package installs with aube, and its init image is Alpine 3.24.** The package is built, tested and version-bumped with aube (`aube-lock.yaml` replaces `package-lock.json`); npm only publishes it. Its dependencies move to @pulumi/kubernetes 4.34, @pulumi/pulumi 3.273, zod 4.6 and vitest 5. `initPermissions.image` now defaults to `alpine:3.24`, so a deployment that does not set it pulls a new image for the store permissions init container on its next update.
+
+### Fixed
+
+- **`koan-relay-client` keeps a base URL's path, and the relay stops leaking stopped activities.** `Client::new("https://example.org/relay")` now sends to `/relay/v1/…`; without a trailing slash it used to send to `/v1/…` at the host's root. In the relay, ended Live Activities and gone devices it could not record are forgotten once their handles expire, where the sets used to fill and then let pushes to newly ended activities reach Apple again (`koan_relay_gone` and `koan_relay_ended_activities` report their sizes); a gone device's revocation no longer holds one of `apns.max_in_flight`'s places while it is written; behind a proxy, a forwarded-address line that is not text is refused rather than passed over, which let a caller move the count onto an address it wrote; and an SQLite error reading the revocation table at startup stops the relay rather than being read as zero.
+
+### Internal
+
+- **Workflows are linted.** CI runs actionlint, with shellcheck, over `.github/workflows`, and `just check` runs it locally.
+- **Dependencies.** rusqlite 0.41 (bundled SQLite from libsqlite3-sys 0.39), parking_lot 0.13 and tokio 1.54.1, with the lockfile brought up to date.
+- **The Pulumi package is linted and formatted with oxc.** oxlint and oxfmt run in its check and `just fmt`, and the pre-commit hook formats staged TypeScript. The schema tests now name the error each refusal should give.
+- **Builds use the latest stable Rust.** `rust-version` is removed from the manifests, so dependency resolution targets the toolchain in use instead of holding crates back for an old compiler; mise installs `rust` at `latest`.
+
 ## 0.1.2
 
 ### Added
