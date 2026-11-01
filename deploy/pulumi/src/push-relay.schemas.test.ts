@@ -7,6 +7,9 @@ const base = {
   store: { hostPath: "/var/lib/koan-push-relay" },
 };
 
+/** The first issue zod raises, for refusals whose wording is zod's own. */
+const issue = (conf: object) => PushRelayConfSchema.safeParse({ ...base, ...conf }).error?.issues[0];
+
 describe("PushRelayConfSchema", () => {
   it("fills defaults", () => {
     const c = PushRelayConfSchema.parse(base);
@@ -43,14 +46,22 @@ describe("PushRelayConfSchema", () => {
     expect(PushRelayConfSchema.parse({ ...base, limits: { handleAlertsPerHour: 30 } }).limits).toEqual({
       handleAlertsPerHour: 30,
     });
-    expect(() => PushRelayConfSchema.parse({ ...base, limits: { handleAlertPerHour: 30 } })).toThrow(
-      /Unrecognized key.*handleAlertPerHour/,
-    );
-    expect(() => PushRelayConfSchema.parse({ ...base, limits: { proofsPerSecond: 0 } })).toThrow("Too small");
+    expect(issue({ limits: { handleAlertPerHour: 30 } })).toMatchObject({
+      code: "unrecognized_keys",
+      path: ["limits"],
+      keys: ["handleAlertPerHour"],
+    });
+    expect(issue({ limits: { proofsPerSecond: 0 } })).toMatchObject({
+      code: "too_small",
+      path: ["limits", "proofsPerSecond"],
+    });
   });
 
   it("refuses a lifetime past what the relay accepts, and unknown keys", () => {
-    expect(() => PushRelayConfSchema.parse({ ...base, handles: { lifetimeDays: 400 } })).toThrow("Too big");
-    expect(() => PushRelayConfSchema.parse({ ...base, extra: true })).toThrow(/Unrecognized key.*extra/);
+    expect(issue({ handles: { lifetimeDays: 400 } })).toMatchObject({
+      code: "too_big",
+      path: ["handles", "lifetimeDays"],
+    });
+    expect(issue({ extra: true })).toMatchObject({ code: "unrecognized_keys", path: [], keys: ["extra"] });
   });
 });
