@@ -77,7 +77,7 @@ rm -f "$crate.bak"
 grep -q "^version = \"$version\"" "$crate"
 
 # The package pins the image it deploys by APP_VERSION, so all three move together.
-(cd deploy/pulumi && npm version "$version" --no-git-tag-version --allow-same-version >/dev/null)
+(cd deploy/pulumi && aube version "$version" --no-git-tag-version --allow-same-version >/dev/null)
 sed -i.bak "s/^export const APP_VERSION = \"[^\"]*\";/export const APP_VERSION = \"$version\";/" "$versions"
 rm -f "$versions.bak"
 grep -q "^export const APP_VERSION = \"$version\";" "$versions"

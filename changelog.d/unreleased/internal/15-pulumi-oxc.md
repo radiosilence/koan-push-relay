@@ -1,0 +1,1 @@
+- **The Pulumi package is linted and formatted with oxc.** oxlint and oxfmt run in its check and `just fmt`, and the pre-commit hook formats staged TypeScript. The schema tests now name the error each refusal should give.

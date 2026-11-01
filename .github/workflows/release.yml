@@ -45,11 +45,11 @@ jobs:
         with:
           ref: main
           token: ${{ secrets.RELEASE_TOKEN }}
-      # Rust, node (npm bumps the Pulumi package) and just from mise.toml, as a
-      # contributor's terminal has them.
+      # Rust, node, aube (which bumps the Pulumi package) and just from
+      # mise.toml, as a contributor's terminal has them.
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
-          install_args: rust node just
+          install_args: rust node aube just
       - name: Release
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
