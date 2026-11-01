@@ -26,12 +26,15 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "check": "tsc -p tsconfig.json && vitest run",
+    "check": "oxfmt --check src && oxlint --deny-warnings src && tsc -p tsconfig.json && vitest run",
+    "fmt": "oxfmt src",
     "prepublishOnly": "aube run build"
   },
   "devDependencies": {
     "@pulumi/kubernetes": "4.34.2",
     "@pulumi/pulumi": "3.273.0",
+    "oxfmt": "0.75.0",
+    "oxlint": "1.90.0",
     "typescript": "6.0.3",
     "vitest": "^5",
     "zod": "4.6.7"

@@ -17,19 +17,25 @@ describe("PushRelayConfSchema", () => {
   });
 
   it("wants a gateway key", () => {
-    expect(() => PushRelayConfSchema.parse({ ...base, apns: { teamId: "TEAM123456" } })).toThrow();
+    expect(() => PushRelayConfSchema.parse({ ...base, apns: { teamId: "TEAM123456" } })).toThrow(
+      "apns.production or apns.sandbox is required",
+    );
   });
 
   it("wants exactly one store, since losing it brings back revoked handles", () => {
-    expect(() => PushRelayConfSchema.parse({ ...base, store: {} })).toThrow();
-    expect(() =>
-      PushRelayConfSchema.parse({ ...base, store: { hostPath: "/var/lib/r", existingClaim: "r" } }),
-    ).toThrow();
-    expect(() => PushRelayConfSchema.parse({ ...base, store: { hostPath: "relay" } })).toThrow();
+    expect(() => PushRelayConfSchema.parse({ ...base, store: {} })).toThrow("exactly one of store.hostPath");
+    expect(() => PushRelayConfSchema.parse({ ...base, store: { hostPath: "/var/lib/r", existingClaim: "r" } })).toThrow(
+      "exactly one of store.hostPath",
+    );
+    expect(() => PushRelayConfSchema.parse({ ...base, store: { hostPath: "relay" } })).toThrow(
+      "must be an absolute path",
+    );
   });
 
   it("seals with a key it holds", () => {
-    expect(() => PushRelayConfSchema.parse({ ...base, handles: { ids: [1], current: 2 } })).toThrow();
+    expect(() => PushRelayConfSchema.parse({ ...base, handles: { ids: [1], current: 2 } })).toThrow(
+      "handles.current must be one of handles.ids",
+    );
     expect(() => PushRelayConfSchema.parse({ ...base, handles: { ids: [1, 2], current: 2 } })).not.toThrow();
   });
 
@@ -37,12 +43,14 @@ describe("PushRelayConfSchema", () => {
     expect(PushRelayConfSchema.parse({ ...base, limits: { handleAlertsPerHour: 30 } }).limits).toEqual({
       handleAlertsPerHour: 30,
     });
-    expect(() => PushRelayConfSchema.parse({ ...base, limits: { handleAlertPerHour: 30 } })).toThrow();
-    expect(() => PushRelayConfSchema.parse({ ...base, limits: { proofsPerSecond: 0 } })).toThrow();
+    expect(() => PushRelayConfSchema.parse({ ...base, limits: { handleAlertPerHour: 30 } })).toThrow(
+      /Unrecognized key.*handleAlertPerHour/,
+    );
+    expect(() => PushRelayConfSchema.parse({ ...base, limits: { proofsPerSecond: 0 } })).toThrow("Too small");
   });
 
   it("refuses a lifetime past what the relay accepts, and unknown keys", () => {
-    expect(() => PushRelayConfSchema.parse({ ...base, handles: { lifetimeDays: 400 } })).toThrow();
-    expect(() => PushRelayConfSchema.parse({ ...base, extra: true })).toThrow();
+    expect(() => PushRelayConfSchema.parse({ ...base, handles: { lifetimeDays: 400 } })).toThrow("Too big");
+    expect(() => PushRelayConfSchema.parse({ ...base, extra: true })).toThrow(/Unrecognized key.*extra/);
   });
 });
