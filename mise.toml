@@ -6,3 +6,5 @@ just = "latest"
 "aqua:koalaman/shellcheck" = "0.11.0"
 lefthook = "latest"
 node = "24"
+# Exact: the lockfile format and its resolution follow aube's version.
+aube = "2.8.5"

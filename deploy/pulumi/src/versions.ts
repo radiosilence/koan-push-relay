@@ -8,5 +8,5 @@ export const APP_VERSION = "0.1.2";
 
 export const VERSIONS = {
   relay: `ghcr.io/radiosilence/koan-push-relay:v${APP_VERSION}`,
-  alpine: "alpine:3.21",
+  alpine: "alpine:3.24",
 } as const;
