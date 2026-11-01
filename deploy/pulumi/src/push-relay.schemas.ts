@@ -10,7 +10,12 @@ const ResourceQuantities = z.strictObject({
 });
 
 /** The relay refuses zero, and anything past 2^30. */
-const Limit = z.number().int().positive().max(2 ** 30).optional();
+const Limit = z
+  .number()
+  .int()
+  .positive()
+  .max(2 ** 30)
+  .optional();
 
 const ApnsKey = z.strictObject({
   /** The key's ten-character id. */
@@ -58,7 +63,12 @@ export const PushRelayConfSchema = z.strictObject({
       /** HTTP/2 connections kept to each gateway. */
       connections: z.number().int().min(1).max(64).default(4),
       /** Pushes waiting on Apple at once; beyond it, 503. */
-      maxInFlight: z.number().int().positive().max(2 ** 30).default(4096),
+      maxInFlight: z
+        .number()
+        .int()
+        .positive()
+        .max(2 ** 30)
+        .default(4096),
     })
     .refine((v) => v.production || v.sandbox, {
       message: "apns.production or apns.sandbox is required",
@@ -164,13 +174,9 @@ export const PushRelayConfSchema = z.strictObject({
           podSelector: { matchLabels: { "app.kubernetes.io/name": "traefik" } },
         },
       ]),
-      privateCidrs: z.array(z.string()).default([
-        "10.0.0.0/8",
-        "172.16.0.0/12",
-        "192.168.0.0/16",
-        "169.254.0.0/16",
-        "100.64.0.0/10",
-      ]),
+      privateCidrs: z
+        .array(z.string())
+        .default(["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10"]),
     })
     .prefault({}),
 });

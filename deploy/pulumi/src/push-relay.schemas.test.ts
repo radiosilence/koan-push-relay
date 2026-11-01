@@ -7,6 +7,9 @@ const base = {
   store: { hostPath: "/var/lib/koan-push-relay" },
 };
 
+/** The first issue zod raises, for refusals whose wording is zod's own. */
+const issue = (conf: object) => PushRelayConfSchema.safeParse({ ...base, ...conf }).error?.issues[0];
+
 describe("PushRelayConfSchema", () => {
   it("fills defaults", () => {
     const c = PushRelayConfSchema.parse(base);
@@ -17,19 +20,25 @@ describe("PushRelayConfSchema", () => {
   });
 
   it("wants a gateway key", () => {
-    expect(() => PushRelayConfSchema.parse({ ...base, apns: { teamId: "TEAM123456" } })).toThrow();
+    expect(() => PushRelayConfSchema.parse({ ...base, apns: { teamId: "TEAM123456" } })).toThrow(
+      "apns.production or apns.sandbox is required",
+    );
   });
 
   it("wants exactly one store, since losing it brings back revoked handles", () => {
-    expect(() => PushRelayConfSchema.parse({ ...base, store: {} })).toThrow();
-    expect(() =>
-      PushRelayConfSchema.parse({ ...base, store: { hostPath: "/var/lib/r", existingClaim: "r" } }),
-    ).toThrow();
-    expect(() => PushRelayConfSchema.parse({ ...base, store: { hostPath: "relay" } })).toThrow();
+    expect(() => PushRelayConfSchema.parse({ ...base, store: {} })).toThrow("exactly one of store.hostPath");
+    expect(() => PushRelayConfSchema.parse({ ...base, store: { hostPath: "/var/lib/r", existingClaim: "r" } })).toThrow(
+      "exactly one of store.hostPath",
+    );
+    expect(() => PushRelayConfSchema.parse({ ...base, store: { hostPath: "relay" } })).toThrow(
+      "must be an absolute path",
+    );
   });
 
   it("seals with a key it holds", () => {
-    expect(() => PushRelayConfSchema.parse({ ...base, handles: { ids: [1], current: 2 } })).toThrow();
+    expect(() => PushRelayConfSchema.parse({ ...base, handles: { ids: [1], current: 2 } })).toThrow(
+      "handles.current must be one of handles.ids",
+    );
     expect(() => PushRelayConfSchema.parse({ ...base, handles: { ids: [1, 2], current: 2 } })).not.toThrow();
   });
 
@@ -37,12 +46,22 @@ describe("PushRelayConfSchema", () => {
     expect(PushRelayConfSchema.parse({ ...base, limits: { handleAlertsPerHour: 30 } }).limits).toEqual({
       handleAlertsPerHour: 30,
     });
-    expect(() => PushRelayConfSchema.parse({ ...base, limits: { handleAlertPerHour: 30 } })).toThrow();
-    expect(() => PushRelayConfSchema.parse({ ...base, limits: { proofsPerSecond: 0 } })).toThrow();
+    expect(issue({ limits: { handleAlertPerHour: 30 } })).toMatchObject({
+      code: "unrecognized_keys",
+      path: ["limits"],
+      keys: ["handleAlertPerHour"],
+    });
+    expect(issue({ limits: { proofsPerSecond: 0 } })).toMatchObject({
+      code: "too_small",
+      path: ["limits", "proofsPerSecond"],
+    });
   });
 
   it("refuses a lifetime past what the relay accepts, and unknown keys", () => {
-    expect(() => PushRelayConfSchema.parse({ ...base, handles: { lifetimeDays: 400 } })).toThrow();
-    expect(() => PushRelayConfSchema.parse({ ...base, extra: true })).toThrow();
+    expect(issue({ handles: { lifetimeDays: 400 } })).toMatchObject({
+      code: "too_big",
+      path: ["handles", "lifetimeDays"],
+    });
+    expect(issue({ extra: true })).toMatchObject({ code: "unrecognized_keys", path: [], keys: ["extra"] });
   });
 });

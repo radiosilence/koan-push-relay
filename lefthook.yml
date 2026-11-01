@@ -7,6 +7,12 @@ pre-commit:
       glob: "*.rs"
       run: cargo fmt --all
       stage_fixed: true
+    # Needs the package installed (`cd deploy/pulumi && aube install`).
+    fmt-ts:
+      root: deploy/pulumi/
+      glob: "*.ts"
+      run: aube exec oxfmt {staged_files}
+      stage_fixed: true
 pre-push:
   commands:
     check:

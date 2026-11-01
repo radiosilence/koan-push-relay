@@ -7,7 +7,7 @@ check:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --locked -- -D warnings
     cargo test --workspace --locked
-    cd deploy/pulumi && npm run -s check
+    cd deploy/pulumi && aube install --frozen-lockfile --silent && aube run --silent check
 
 # The checks that take seconds, run before every push; CI runs the rest.
 fast:
@@ -17,6 +17,7 @@ fast:
 # Format
 fmt:
     cargo fmt --all
+    cd deploy/pulumi && aube run --silent fmt
 
 # Install the git hooks
 hooks:

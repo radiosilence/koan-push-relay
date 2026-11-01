@@ -139,7 +139,7 @@ jobs:
             printf '%s\n' "$files" | sed 's/^/  /'
             # Anything cargo compiles or that decides how.
             touches '^crates/|^Cargo\.(toml|lock)$|^\.cargo/|^rust-toolchain|^\.github/' || rust=false
-            touches '^deploy/pulumi/|^\.github/' || package=false
+            touches '^deploy/pulumi/|^mise\.toml$|^\.github/' || package=false
             # The static binaries and the image that copies them in. The Rust
             # jobs already check the code, so a pull request builds these
             # only when the recipe changed or the lockfile did, since the
@@ -270,14 +270,12 @@ jobs:
         working-directory: deploy/pulumi
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: deploy/pulumi/package-lock.json
-      - run: npm ci
-      - run: npm run check
-      - run: npm run build
+          install_args: node aube
+      - run: aube install --frozen-lockfile
+      - run: aube run check
+      - run: aube run build
 
   # CHANGELOG.md is generated from changelog.d/ (scripts/changelog.py). A pull
   # request adds fragments without regenerating it, so only its fragments and
@@ -575,19 +573,19 @@ jobs:
         working-directory: deploy/pulumi
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
-          node-version: 24
-          registry-url: https://npm.pkg.github.com
-          cache: npm
-          cache-dependency-path: deploy/pulumi/package-lock.json
-      - run: npm ci
+          install_args: node aube
+      - run: aube install --frozen-lockfile
       # A version cannot be published twice, so a retried release skips one
       # already out and goes on to the GitHub release. Only a 404 means it is
-      # not out; any other error fails rather than guessing.
+      # not out; any other error fails rather than guessing. npm, which comes
+      # with node, does the registry's part: the skip reads its E404.
       - env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          npm config set --location=user @radiosilence:registry https://npm.pkg.github.com
+          npm config set --location=user //npm.pkg.github.com/:_authToken "$NODE_AUTH_TOKEN"
           spec="$(node -p 'const p = require("./package.json"); p.name + "@" + p.version')"
           if out=$(npm view "$spec" version 2>&1); then
             echo "$spec is already published"
