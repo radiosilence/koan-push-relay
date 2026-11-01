@@ -2,7 +2,6 @@
 name = "koan-relay-client"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "A client for kōan's push relay: registering devices and Live Activities, and pushing to them."
