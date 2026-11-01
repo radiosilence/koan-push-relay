@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::{Mutex, RwLock};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::handle::TokenHash;
 
@@ -60,6 +60,8 @@ impl Revocations {
             .query_row("SELECT ms FROM clock WHERE name = 'minted'", [], |r| {
                 r.get(0)
             })
+            .optional()
+            .map_err(|e| e.to_string())?
             .unwrap_or(0);
         let newest: i64 = db
             .query_row(
@@ -67,7 +69,7 @@ impl Revocations {
                 [],
                 |r| r.get(0),
             )
-            .unwrap_or(0);
+            .map_err(|e| e.to_string())?;
         let this = Self {
             map: RwLock::new(HashMap::new()),
             db: Mutex::new(db),

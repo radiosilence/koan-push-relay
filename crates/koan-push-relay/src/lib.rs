@@ -32,9 +32,11 @@ mod metrics;
 mod quota;
 mod revocations;
 
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
@@ -45,6 +47,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -126,14 +129,16 @@ pub struct Relay {
     bad_tokens: Global,
     /// Devices whose proven token Apple refused within the window, per
     /// gateway, each once, oldest first.
-    refused_proven: [parking_lot::Mutex<std::collections::VecDeque<(u64, TokenHash)>>; 2],
+    refused_proven: [Mutex<VecDeque<(u64, TokenHash)>>; 2],
     /// Devices Apple has called gone that the relay is retiring, or could not
     /// retire for want of room: pushes to them stop here, so a burst to a
-    /// gone device costs Apple no more than its first answer.
-    gone: parking_lot::Mutex<std::collections::HashSet<TokenHash>>,
-    /// Live Activities Apple has called ended, by their token's hash: a
-    /// server that ignores the 410 reaches Apple no further.
-    ended: parking_lot::Mutex<std::collections::HashSet<TokenHash>>,
+    /// gone device costs Apple no more than its first answer. Each is kept,
+    /// in Unix ms, until every handle that could open when it was added has
+    /// expired.
+    gone: Mutex<HashMap<TokenHash, u64>>,
+    /// Live Activities Apple has called ended, by their token's hash, kept
+    /// as `gone` is: a server that ignores the 410 reaches Apple no further.
+    ended: Mutex<HashMap<TokenHash, u64>>,
     max_gone: usize,
     device_bad_activity: Keyed<TokenHash>,
     in_flight: Arc<Semaphore>,
@@ -278,22 +283,19 @@ impl Relay {
                 // the caller's: counting `client_ip_hops` back from the end
                 // passes over them, and anything further back came from the
                 // caller.
-                let values: Vec<&str> = headers
+                let found = headers
                     .get_all(name)
                     .iter()
+                    .rev()
                     .filter_map(|v| v.to_str().ok())
-                    .collect();
-                let found = values
-                    .join(",")
-                    .rsplit(',')
+                    .flat_map(|v| v.rsplit(','))
                     .nth(self.client_ip_hops - 1)
                     .and_then(|v| v.trim().parse::<IpAddr>().ok());
                 match found {
                     Some(ip) => ip,
                     None => {
-                        static SAID: std::sync::atomic::AtomicBool =
-                            std::sync::atomic::AtomicBool::new(false);
-                        if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        static SAID: AtomicBool = AtomicBool::new(false);
+                        if !SAID.swap(true, Ordering::Relaxed) {
                             log::error!(
                                 "a request came without a readable caller in {name}: is the proxy setting it?"
                             );
@@ -326,6 +328,15 @@ impl Relay {
         self.ip_registrations.sweep(now);
         self.ip_revocations.sweep(now);
         self.ip_bad_tokens.sweep(now);
+        let now_ms = unix_ms();
+        self.gone.lock().retain(|_, until| *until > now_ms);
+        self.ended.lock().retain(|_, until| *until > now_ms);
+    }
+
+    /// Until when a device or activity stopped now stays stopped: past it,
+    /// no handle that opens now still does.
+    fn stopped_until(&self) -> u64 {
+        unix_ms() + self.handles.lifetime_ms()
     }
 
     fn take(&self, allowance: Allowance, now: u64) -> Result<(), Refusal> {
@@ -360,6 +371,22 @@ impl Relay {
             Allowance::RefusedActivity(k) => self.device_bad_activity.refund(&k),
             Allowance::Refused => self.bad_tokens.refund(),
         }
+    }
+
+    /// The checks every route starts with, in order: JSON, the caller's
+    /// allowance in `limit`, then the body as `T`.
+    async fn admit<T: serde::de::DeserializeOwned>(
+        &self,
+        headers: &HeaderMap,
+        peer: SocketAddr,
+        prefix: u32,
+        limit: &Keyed<u128>,
+        body: Body,
+    ) -> Result<(u128, T), Refusal> {
+        json_only(headers)?;
+        let caller = self.caller(headers, peer, prefix)?;
+        limit.check(caller, self.clock.now()).map_err(limited)?;
+        Ok((caller, read(body).await?))
     }
 
     /// Count a request's outcome and answer it.
@@ -561,9 +588,10 @@ impl Relay {
     /// Stop pushes to a Live Activity Apple has called ended or unknown.
     fn end_activity(&self, job: &Job) {
         if let Some(activity) = job.activity {
+            let until = self.stopped_until();
             let mut ended = self.ended.lock();
             if ended.len() < self.max_gone {
-                ended.insert(activity);
+                ended.insert(activity, until);
             }
         }
     }
@@ -595,12 +623,13 @@ impl Relay {
             return delivery;
         }
         {
+            let until = self.stopped_until();
             let mut gone = self.gone.lock();
-            if gone.contains(&device) {
+            if gone.contains_key(&device) {
                 return delivery;
             }
             if gone.len() < self.max_gone {
-                gone.insert(device);
+                gone.insert(device, until);
             }
         }
         // Several devices' proven tokens refused in a short while say the
@@ -613,22 +642,37 @@ impl Relay {
             self.gone.lock().remove(&device);
             return Delivery::Held;
         }
-        let writer = self.clone();
-        let retired =
-            tokio::task::spawn_blocking(move || writer.revocations.revoke(device, unix_ms())).await;
-        match retired {
+        match self.record_revocation(device).await {
             // Retired on disk: the revocation table answers for it from now
             // on, for every handle minted before this.
-            Ok(Ok(())) => {
+            Ok(()) => {
                 self.gone.lock().remove(&device);
             }
             // No room, or no write: it stays stopped here until it
-            // registers again.
-            Ok(Err(RevokeError::Full)) => {}
-            Ok(Err(RevokeError::Store(e))) => log::error!("retiring a gone token: {e}"),
-            Err(e) => log::error!("retiring a gone token: {e}"),
+            // registers again or its handles expire.
+            Err(RevokeError::Full) => {}
+            Err(RevokeError::Store(e)) => log::error!("retiring a gone token: {e}"),
         }
         delivery
+    }
+
+    /// Revoke every handle for `device` minted until now, on disk, off the
+    /// runtime's threads.
+    async fn record_revocation(self: &Arc<Self>, device: TokenHash) -> Result<(), RevokeError> {
+        let writer = self.clone();
+        tokio::task::spawn_blocking(move || writer.revocations.revoke(device, unix_ms()))
+            .await
+            .unwrap_or_else(|e| Err(RevokeError::Store(e.to_string())))
+    }
+
+    /// What a handle or revoker holds. One minted far ahead says the clock
+    /// is wrong, so the caller keeps it and tries later; anything else that
+    /// does not open never will.
+    fn open(&self, sealed: &str) -> Result<handle::Device, Refusal> {
+        self.handles.open(sealed, unix_ms()).map_err(|e| match e {
+            Invalid::Future => Refusal::Busy,
+            _ => Refusal::Gone,
+        })
     }
 
     /// Send a token a background push, to learn that Apple knows it, before
@@ -942,13 +986,9 @@ async fn challenge(
     body: Body,
 ) -> Response {
     let answer = async {
-        json_only(&headers)?;
-        let caller = relay.caller(&headers, peer, PROOF_PREFIX)?;
-        relay
-            .ip_registrations
-            .check(caller, relay.clock.now())
-            .map_err(limited)?;
-        let _: EmptyRequest = read(body).await?;
+        let _: (_, EmptyRequest) = relay
+            .admit(&headers, peer, PROOF_PREFIX, &relay.ip_registrations, body)
+            .await?;
         let now = unix_ms();
         Ok(Json(json!({
             "challenge": relay.attestor.challenge(now),
@@ -967,13 +1007,9 @@ async fn attest_key(
     body: Body,
 ) -> Response {
     let answer = async {
-        json_only(&headers)?;
-        let caller = relay.caller(&headers, peer, PROOF_PREFIX)?;
-        relay
-            .ip_registrations
-            .check(caller, relay.clock.now())
-            .map_err(limited)?;
-        let req: AttestRequest = read(body).await?;
+        let (_, req): (_, AttestRequest) = relay
+            .admit(&headers, peer, PROOF_PREFIX, &relay.ip_registrations, body)
+            .await?;
         let _working = relay.requests.try_acquire().map_err(|_| Refusal::Busy)?;
         relay
             .attestor
@@ -1013,13 +1049,9 @@ async fn register(
     body: Body,
 ) -> Response {
     let answer = async {
-        json_only(&headers)?;
-        let caller = relay.caller(&headers, peer, PROOF_PREFIX)?;
-        relay
-            .ip_registrations
-            .check(caller, relay.clock.now())
-            .map_err(limited)?;
-        let req: RegisterRequest = read(body).await?;
+        let (caller, req): (_, RegisterRequest) = relay
+            .admit(&headers, peer, PROOF_PREFIX, &relay.ip_registrations, body)
+            .await?;
         let _working = relay.requests.try_acquire().map_err(|_| Refusal::Busy)?;
         let token = device_token(&req.token)?;
         let slot = slot(&req.slot)?;
@@ -1068,24 +1100,14 @@ async fn revoke(
     body: Body,
 ) -> Response {
     let answer = async {
-        json_only(&headers)?;
-        let caller = relay.caller(&headers, peer, PROOF_PREFIX)?;
-        relay
-            .ip_revocations
-            .check(caller, relay.clock.now())
-            .map_err(limited)?;
-        let req: RevokeRequest = read(body).await?;
+        let (_, req): (_, RevokeRequest) = relay
+            .admit(&headers, peer, PROOF_PREFIX, &relay.ip_revocations, body)
+            .await?;
         let _working = relay.requests.try_acquire().map_err(|_| Refusal::Busy)?;
         // Revoking asks nothing of Apple: a revoker is proof enough, since
         // the relay minted it only for a token Apple accepted, and only the
         // app holds one.
-        let revoker = relay
-            .handles
-            .open(&req.revoker, unix_ms())
-            .map_err(|e| match e {
-                Invalid::Future => Refusal::Busy,
-                _ => Refusal::Gone,
-            })?;
+        let revoker = relay.open(&req.revoker)?;
         if !revoker.revoker {
             return Err(Refusal::Bad("not a revoker"));
         }
@@ -1100,17 +1122,10 @@ async fn revoke(
             .device_revocations
             .check(device, relay.clock.now())
             .map_err(limited)?;
-        let writer = relay.clone();
-        let revoked =
-            tokio::task::spawn_blocking(move || writer.revocations.revoke(device, unix_ms())).await;
-        match revoked {
-            Ok(Ok(())) => Ok(StatusCode::NO_CONTENT.into_response()),
-            Ok(Err(RevokeError::Full)) => Err(Refusal::Busy),
-            Ok(Err(RevokeError::Store(e))) => {
-                log::error!("recording a revocation: {e}");
-                Err(Refusal::Busy)
-            }
-            Err(e) => {
+        match relay.record_revocation(device).await {
+            Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
+            Err(RevokeError::Full) => Err(Refusal::Busy),
+            Err(RevokeError::Store(e)) => {
                 log::error!("recording a revocation: {e}");
                 Err(Refusal::Busy)
             }
@@ -1127,13 +1142,9 @@ async fn register_activity(
     body: Body,
 ) -> Response {
     let answer = async {
-        json_only(&headers)?;
-        let caller = relay.caller(&headers, peer, PROOF_PREFIX)?;
-        relay
-            .ip_registrations
-            .check(caller, relay.clock.now())
-            .map_err(limited)?;
-        let req: RegisterActivityRequest = read(body).await?;
+        let (_, req): (_, RegisterActivityRequest) = relay
+            .admit(&headers, peer, PROOF_PREFIX, &relay.ip_registrations, body)
+            .await?;
         let _working = relay.requests.try_acquire().map_err(|_| Refusal::Busy)?;
         let token = device_token(&req.token)?;
         let slot = slot(&req.slot)?;
@@ -1141,19 +1152,13 @@ async fn register_activity(
         // one would show on the lock screen. The revoker stands for it: the
         // relay minted it only for a device Apple accepted, and only the app
         // holds it.
-        let revoker = relay
-            .handles
-            .open(&req.revoker, unix_ms())
-            .map_err(|e| match e {
-                Invalid::Future => Refusal::Busy,
-                _ => Refusal::Gone,
-            })?;
+        let revoker = relay.open(&req.revoker)?;
         if !revoker.revoker {
             return Err(Refusal::Bad("not a revoker"));
         }
         let device = relay.hasher.hash(&revoker.token);
         if relay.revocations.revoked(&device, revoker.minted_ms)
-            || relay.gone.lock().contains(&device)
+            || relay.gone.lock().contains_key(&device)
         {
             return Err(Refusal::Gone);
         }
@@ -1183,13 +1188,9 @@ async fn push(
     body: Body,
 ) -> Response {
     let answer = async {
-        json_only(&headers)?;
-        let caller = relay.caller(&headers, peer, PUSH_PREFIX)?;
-        relay
-            .ip_pushes
-            .check(caller, relay.clock.now())
-            .map_err(limited)?;
-        let req: PushRequest = read(body).await?;
+        let (_, req): (_, PushRequest) = relay
+            .admit(&headers, peer, PUSH_PREFIX, &relay.ip_pushes, body)
+            .await?;
         let _working = relay.requests.try_acquire().map_err(|_| Refusal::Busy)?;
         let state = match (req.kind, req.state) {
             (Kind::Activity, Some(state)) => {
@@ -1207,13 +1208,7 @@ async fn push(
                 return Err(Refusal::Bad("the blob is not base64url of an allowed size"));
             }
         }
-        let device = relay
-            .handles
-            .open(&req.handle, unix_ms())
-            .map_err(|e| match e {
-                Invalid::Future => Refusal::Busy,
-                _ => Refusal::Gone,
-            })?;
+        let device = relay.open(&req.handle)?;
         if device.revoker || device.attested {
             return Err(Refusal::Bad("not a handle"));
         }
@@ -1226,12 +1221,14 @@ async fn push(
         let hash = device
             .activity_of
             .unwrap_or_else(|| relay.hasher.hash(&device.token));
-        if relay.revocations.revoked(&hash, device.minted_ms) || relay.gone.lock().contains(&hash) {
+        if relay.revocations.revoked(&hash, device.minted_ms)
+            || relay.gone.lock().contains_key(&hash)
+        {
             return Err(Refusal::Gone);
         }
         let activity = device.activity_of.map(|_| relay.hasher.hash(&device.token));
         if let Some(activity) = activity
-            && relay.ended.lock().contains(&activity)
+            && relay.ended.lock().contains_key(&activity)
         {
             return Err(Refusal::Gone);
         }
