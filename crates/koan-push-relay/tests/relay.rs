@@ -1014,6 +1014,8 @@ async fn a_forwarded_line_that_is_not_text_is_not_passed_over() {
         .await
         .unwrap();
     assert_eq!(response.status(), 400);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["error"], "no caller address");
 }
 
 #[tokio::test]

@@ -225,7 +225,7 @@ It sees, per request: a device token or a Live Activity's (registration only), a
 It keeps:
 
 - the revocation table: a keyed hash of each revoking or gone device's token and when, for 365 days, and the latest time its clock has read;
-- in memory, keyed hashes of gone devices it has not yet written to the revocation table or had no room for, and of Live Activities Apple has ended, each until the handles that could reach it have expired;
+- in memory, keyed hashes of gone devices it has not yet written to the revocation table or could not write there, and of Live Activities Apple has ended, each until the handles that could reach it when it was stopped have expired;
 - counters for quotas, in memory: keyed hashes of tokens, slots, and caller addresses as they are (IPv6 cut to its prefix), each forgotten once its allowance has refilled;
 - aggregate counts by route and outcome, pushes and proofs.
 
