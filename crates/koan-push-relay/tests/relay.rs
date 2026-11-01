@@ -996,6 +996,29 @@ async fn behind_a_proxy_the_last_forwarded_address_is_the_caller() {
 }
 
 #[tokio::test]
+async fn a_forwarded_line_that_is_not_text_is_not_passed_over() {
+    let h = Harness::start(|cfg| {
+        cfg.client_ip_header = Some("x-forwarded-for".into());
+    })
+    .await;
+    let response = h
+        .http
+        .post(format!("{}/v1/register", h.url))
+        .header("x-forwarded-for", "198.51.100.1")
+        .header(
+            "x-forwarded-for",
+            reqwest::header::HeaderValue::from_bytes(b"10.0.0.1\xff").unwrap(),
+        )
+        .json(&json!({ "token": TOKEN, "slot": SLOT }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["error"], "no caller address");
+}
+
+#[tokio::test]
 async fn behind_two_proxies_the_caller_is_two_back() {
     let h = Harness::start(|cfg| {
         cfg.limits.ip_registrations_per_minute = 1;
