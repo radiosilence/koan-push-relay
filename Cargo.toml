@@ -7,7 +7,6 @@ members = ["crates/koan-push-relay", "crates/koan-relay-client"]
 # released together.
 version = "0.1.2"
 edition = "2024"
-rust-version = "1.90"
 license = "MIT"
 repository = "https://github.com/radiosilence/koan-push-relay"
 
