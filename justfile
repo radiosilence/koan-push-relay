@@ -17,6 +17,7 @@ fast:
 # Format
 fmt:
     cargo fmt --all
+    cd deploy/pulumi && aube run --silent fmt
 
 # Install the git hooks
 hooks:
