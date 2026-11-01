@@ -29,6 +29,11 @@
     "check": "tsc -p tsconfig.json && vitest run",
     "prepublishOnly": "aube run build"
   },
+  "peerDependencies": {
+    "@pulumi/kubernetes": "^4",
+    "@pulumi/pulumi": "^3",
+    "zod": "^4"
+  },
   "devDependencies": {
     "@pulumi/kubernetes": "4.34.2",
     "@pulumi/pulumi": "3.273.0",
