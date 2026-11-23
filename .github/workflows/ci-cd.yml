@@ -273,9 +273,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.deps == 'true'
     timeout-minutes: 15
-    # Blocking. Any advisory already in the lockfile that cannot be fixed yet
-    # is acknowledged in .cargo/audit.toml, with its reason, so this fails on
-    # anything new.
+    # Blocking: any advisory fails it. One that cannot be fixed yet is
+    # acknowledged in .cargo/audit.toml (none today), with its reason.
     #
     # cargo-audit run directly: its exit code is the gate. Unsound and
     # unmaintained advisories are printed as warnings and do not fail it; a
