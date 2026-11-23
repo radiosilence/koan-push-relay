@@ -1,0 +1,1 @@
+- **CI audits the dependencies for advisories, and `url` is on 2.5.9.** A blocking `cargo audit` runs on every push to main and on pull requests that change a manifest, the lockfile or `.cargo/`; its first run found RUSTSEC-2026-0592, a stack overflow in `url` 2.5.8's `Url::origin()`, fixed by moving to 2.5.9.

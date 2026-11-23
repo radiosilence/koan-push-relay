@@ -54,6 +54,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       package: ${{ steps.filter.outputs.package }}
       docker: ${{ steps.filter.outputs.docker }}
+      deps: ${{ steps.filter.outputs.deps }}
       release: ${{ steps.filter.outputs.release }}
       version: ${{ steps.filter.outputs.version }}
     steps:
@@ -82,7 +83,7 @@ jobs:
         # in a condition, and no grep exits early (`-q`) on a pipe whose
         # writer would then fail.
         run: |
-          rust=true package=true docker=true release=false
+          rust=true package=true docker=true deps=true release=false
           version_of() { sed -n 's/^version = "\(.*\)"/\1/p' | head -1; }
           base=HEAD^1
           if [ "$EVENT" = "push" ]; then
@@ -149,11 +150,16 @@ jobs:
             if [ "$EVENT" = "pull_request" ] || [ "$rust" = false ]; then
               touches '^Dockerfile$|^Cargo\.lock$|^\.github/' || docker=false
             fi
+            if [ "$EVENT" = "pull_request" ]; then
+              # A new advisory can land on any day; main audits every push.
+              touches '^Cargo\.lock$|Cargo\.toml$|^\.cargo/|^\.github/' || deps=false
+            fi
           fi
           {
             echo "rust=$rust"
             echo "package=$package"
             echo "docker=$docker"
+            echo "deps=$deps"
             echo "release=$release"
             echo "version=$version"
           } | tee -a "$GITHUB_OUTPUT"
@@ -258,6 +264,29 @@ jobs:
         with:
           toolchain: stable
       - run: cargo fmt --all -- --check
+
+  # The relay holds the developer's Apple key and serves other people's
+  # servers, so a known vulnerability in what it links blocks the change.
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.deps == 'true'
+    timeout-minutes: 15
+    # Blocking: any advisory fails it. One that cannot be fixed yet is
+    # acknowledged in .cargo/audit.toml (none today), with its reason.
+    #
+    # cargo-audit run directly: its exit code is the gate. Unsound and
+    # unmaintained advisories are printed as warnings and do not fail it; a
+    # vulnerability does. rustsec/audit-check reports through a check run it
+    # creates and then updates, and in koan that update came back 404 now and
+    # then, failing the job after a clean audit.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: cargo install cargo-audit --locked --version 0.23.0
+      - run: cargo audit
 
   chart:
     name: Chart
@@ -435,7 +464,7 @@ jobs:
     name: Checks
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [changes, actionlint, make-room, test, lint, format, chart, changelog, version, linux-build, container]
+    needs: [changes, actionlint, make-room, test, lint, format, audit, chart, changelog, version, linux-build, container]
     if: always()
     steps:
       - env:

@@ -3,14 +3,18 @@
 # with dist/ as the context, holding <arch>/koan-push-relay, the same binaries a
 # release attaches. By hand: `docker build -f Dockerfile dist`.
 
+# rustls-platform-verifier needs a system trust store on Linux and does not
+# fall back to compiled-in roots; without this, the connection to Apple fails.
+# Pinned by digest, so the roots the relay trusts for Apple change only in a
+# reviewed commit. A stage of its own because Dependabot's docker updates read
+# FROM lines only, not COPY --from.
+FROM gcr.io/distroless/static:latest@sha256:4c2cd1dee442c9a99924a378c7c126fac8fef14771579ef567c3f2bdd7a5122a AS certs
+
 FROM scratch
 
 ARG TARGETARCH
 
-# rustls-platform-verifier needs a system trust store on Linux and does not
-# fall back to compiled-in roots; without this, the connection to Apple fails.
-COPY --from=gcr.io/distroless/static:latest \
-     /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 COPY ${TARGETARCH}/koan-push-relay /koan-push-relay
 
