@@ -1,0 +1,1 @@
+- **The image pins the base its CA bundle comes from.** The trust store the relay checks Apple's certificate against was copied from `gcr.io/distroless/static:latest`, so it could change under a rebuild unannounced; it is now pinned by digest, and Dependabot moves the digest in a reviewed PR.

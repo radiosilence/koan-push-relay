@@ -9,7 +9,9 @@ ARG TARGETARCH
 
 # rustls-platform-verifier needs a system trust store on Linux and does not
 # fall back to compiled-in roots; without this, the connection to Apple fails.
-COPY --from=gcr.io/distroless/static:latest \
+# Pinned by digest, so the roots the relay trusts for Apple change only in a
+# reviewed commit (Dependabot's docker updates move it).
+COPY --from=gcr.io/distroless/static:latest@sha256:4c2cd1dee442c9a99924a378c7c126fac8fef14771579ef567c3f2bdd7a5122a \
      /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 COPY ${TARGETARCH}/koan-push-relay /koan-push-relay

@@ -1,0 +1,1 @@
+- **Dependabot moves the pinned actions, crates and base image.** Weekly, one grouped PR per ecosystem; the Pulumi package is left out because Dependabot cannot update `aube-lock.yaml`.

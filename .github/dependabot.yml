@@ -1,0 +1,24 @@
+# Weekly, grouped: one PR per ecosystem rather than one per crate. Action
+# SHAs and the Dockerfile's base digest are pinned, so without this they would
+# never move.
+#
+# No npm entry for deploy/pulumi: Dependabot's npm updater knows npm, yarn,
+# pnpm and bun lockfiles but not aube-lock.yaml, so it would bump package.json
+# alone and leave the lockfile behind, failing `aube install --frozen-lockfile`
+# in CI. The package's dependencies are moved by hand until it can.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    groups: { actions: { patterns: ["*"] } }
+  - package-ecosystem: cargo
+    directory: /
+    schedule: { interval: weekly }
+    groups: { cargo: { patterns: ["*"] } }
+  # The Dockerfile's CA bundle comes from a base pinned by digest; this moves
+  # the digest.
+  - package-ecosystem: docker
+    directory: /
+    schedule: { interval: weekly }
+    groups: { docker: { patterns: ["*"] } }
