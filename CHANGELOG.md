@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.4
+
+### Security
+
+- **CI audits the dependencies for advisories, and `url` is on 2.5.9.** A blocking `cargo audit` runs on every push to main and on pull requests that change a manifest, the lockfile or `.cargo/`; its first run found RUSTSEC-2026-0592, a stack overflow in `url` 2.5.8's `Url::origin()`, fixed by moving to 2.5.9.
+- **The image pins the base its CA bundle comes from.** The trust store the relay checks Apple's certificate against was copied from `gcr.io/distroless/static:latest`, so it could change under a rebuild unannounced; it is now pinned by digest, and Dependabot moves the digest in a reviewed PR.
+
+### Fixed
+
+- Package bumps
+
+### Internal
+
+- **Dependabot moves the pinned actions, crates and base image.** Weekly, one grouped PR per ecosystem; the Pulumi package is left out because Dependabot cannot update `aube-lock.yaml`.
+
 ## 0.1.3
 
 ### Security
